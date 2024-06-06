@@ -65,7 +65,7 @@ def train(argv):
     else:
         args.SURE_tau = None
         args.SURE_tau2 = None
-    if args.architecture!='UNet-Upsample':
+    if args.architecture!='UNet-Upsample': 
         args.upsample_mode = None
     if args.noise_type=='Galsim':
         args.poisson_settings = None
