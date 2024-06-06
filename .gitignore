@@ -1,0 +1,9 @@
+/*.cmake
+/*.DS_Store
+/.user
+/build
+__pycache__/
+.DS_Store
+Thumbs.db
+*.pyc
+*.pyo
