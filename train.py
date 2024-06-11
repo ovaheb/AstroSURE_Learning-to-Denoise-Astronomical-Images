@@ -153,9 +153,9 @@ def train(argv):
     
     # Define the model
     if args.architecture == 'UNet':
-        model = UNet(in_channels=args.img_channel, out_channels=args.img_channel, load_from=args.load_from)
+        model = UNet(in_channels=args.img_channel, out_channels=args.img_channel, load_from=args.load_from + '/best_model.pth')
     elif args.architecture == 'UNet-Upsample':
-        model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=args.load_from)
+        model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=args.load_from + '/best_model.pth')
     elif args.architecture == 'DnCNN':
         model = net.DnCNN()
     
@@ -482,7 +482,8 @@ def initialize_wandb(args, run_name, date):
                     "SURE Tau": args.SURE_tau,
                     "SURE Tau2": args.SURE_tau2,
                     "Disable clipping": args.disable_clipping,
-                    "Fix Learning Rate": args.fix_learning_rate}, mode=args.wandb_mode,)
+                    "Fix Learning Rate": args.fix_learning_rate,
+                    "Pretrained weights loaded from": args.load_from}, mode=args.wandb_mode,)
     
 ## Parse arguments to train images with different settings and parameters
 def parse_args(argv):

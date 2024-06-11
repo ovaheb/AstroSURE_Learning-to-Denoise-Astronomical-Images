@@ -7,3 +7,5 @@ __pycache__/
 Thumbs.db
 *.pyc
 *.pyo
+submit_job.py
+playground

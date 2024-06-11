@@ -69,8 +69,8 @@ def create(dirvs, exbls):
     e = lambda s_: w(f'echo "{s_}"')
 
     w('#!/bin/bash%s'%(' -i' if _a.interactive else ''))
-    d('account=rrg-kyi')
-    d('time=15:00:00')
+    d('account=def-sfabbro')
+    d('time=20:00:00')
     for it in dirvs: d(it)
     e('BEGIN EXECUTABLES')
     for it in exbls: w(it)
