@@ -1,7 +1,7 @@
 
 import torch.nn as nn
 import basicblock as B
-
+import torch
 
 
 # --------------------------------------------
@@ -16,14 +16,6 @@ class DnCNN(nn.Module):
         nc: channel number
         nb: total number of conv layers
         act_mode: batch norm + activation function; 'BR' means BN+ReLU.
-        # ------------------------------------
-        Batch normalization and residual learning are
-        beneficial to Gaussian denoising (especially
-        for a single noise level).
-        The residual of a noisy image corrupted by additive white
-        Gaussian noise (AWGN) follows a constant
-        Gaussian distribution which stablizes batch
-        normalization during training.
         # ------------------------------------
         """
         super(DnCNN, self).__init__()
@@ -120,20 +112,4 @@ class FDnCNN(nn.Module):
 
 
 if __name__ == '__main__':
-    from utils import utils_model
-    import torch
     model1 = DnCNN(in_nc=1, out_nc=1, nc=64, nb=20, act_mode='BR')
-    print(utils_model.describe_model(model1))
-
-    model2 = FDnCNN(in_nc=2, out_nc=1, nc=64, nb=20, act_mode='R')
-    print(utils_model.describe_model(model2))
-
-    x = torch.randn((1, 1, 240, 240))
-    x1 = model1(x)
-    print(x1.shape)
-
-    x = torch.randn((1, 2, 240, 240))
-    x2 = model2(x)
-    print(x2.shape)
-
-    #  run models/network_dncnn.py
