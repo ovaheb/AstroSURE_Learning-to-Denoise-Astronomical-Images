@@ -8,5 +8,6 @@ Thumbs.db
 *.pyc
 *.pyo
 submit_job.py
-playground
+**/playground
+playground.py
 queue_cc.py
