@@ -11,7 +11,7 @@ def logger_info(logger_name, log_path='log.log'):
         return
     else:
         level = logging.INFO
-        formatter = logging.Formatter('%(asctime)s.%(msecs)03d : %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        formatter = logging.Formatter('%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         fh = logging.FileHandler(log_path, mode='a')
         fh.setFormatter(formatter)
         log.setLevel(level)

@@ -5,6 +5,7 @@ import random
 import numpy as np
 import torch
 import cv2
+import sep
 from torchvision.utils import make_grid
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -21,9 +22,14 @@ import cr
 import torchvision.transforms.functional as tvF
 from datetime import date
 from sklearn.preprocessing import StandardScaler
+from tabulate import tabulate
+import statistics
 
+## Variables
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 plt.rcParams.update({'font.size': 12})
+PERCENTILE = 99.9
+PLOT_SIZE, MAX_NUM_TO_VISUALIZE = 7, 5
 
 '''
 # --------------------------------------------
@@ -70,402 +76,7 @@ def is_fits_file(filename):
     filename = str(filename).lower()
     return any(filename.endswith(extension) for extension in FITS_EXTENSIONS)
 
-def get_timestamp():
-    return datetime.now().strftime('%y%m%d-%H%M%S')
 
-
-def imshow(x, title=None, cbar=False, figsize=None, font_scale=1, hide_ticks=True):
-    font_size = 18 // font_scale
-    plt.rcParams.update({'font.size': font_size})
-
-    plt.figure(figsize=figsize)
-    plt.imshow(np.squeeze(x), interpolation='nearest', cmap='gray')
-    cmap = plt.gca().get_images()[0].get_cmap()
-    if title:
-        plt.title(title)
-    if cbar:
-        plt.colorbar(fraction=0.046, pad=0.04)
-    if hide_ticks:
-        plt.xticks([])
-        plt.yticks([])
-    plt.show()
-    return cmap
-
-
-'''
-# --------------------------------------------
-# get image pathes
-# --------------------------------------------
-'''
-
-
-def get_image_paths(dataroot):
-    paths = None  # return None if dataroot is None
-    if isinstance(dataroot, str):
-        paths = sorted(_get_paths_from_images(dataroot))
-    elif isinstance(dataroot, list):
-        paths = []
-        for i in dataroot:
-            paths += sorted(_get_paths_from_images(i))
-    return paths
-
-
-def _get_paths_from_images(path):
-    assert os.path.isdir(path), '{:s} is not a valid directory'.format(path)
-    images = []
-    for dirpath, _, fnames in sorted(os.walk(path)):
-        for fname in sorted(fnames):
-            if is_image_file(fname) or is_fits_file(fname):
-                img_path = os.path.join(dirpath, fname)
-                images.append(img_path)
-    assert images, '{:s} has nothing valid image file'.format(path)
-    return images
-
-
-'''
-# --------------------------------------------
-# split large images into small images 
-# --------------------------------------------
-'''
-
-
-def patches_from_image(img, p_size=512, p_overlap=64, p_max=800):
-    w, h = img.shape[:2]
-    patches = []
-    if w > p_max and h > p_max:
-        w1 = list(np.arange(0, w-p_size, p_size-p_overlap, dtype=np.int))
-        h1 = list(np.arange(0, h-p_size, p_size-p_overlap, dtype=np.int))
-        w1.append(w-p_size)
-        h1.append(h-p_size)
-        for i in w1:
-            for j in h1:
-                patches.append(img[i:i+p_size, j:j+p_size,:])
-    else:
-        patches.append(img)
-    return patches
-
-def patches_from_image_coordinate(img, index, p_size=512, p_overlap=64, p_max=800):
-    w, h = img.shape[:2]
-    patches = []
-    if w > p_max and h > p_max:
-        w1 = list(np.arange(0, w-p_size, p_size-p_overlap, dtype=np.int))
-        h1 = list(np.arange(0, h-p_size, p_size-p_overlap, dtype=np.int))
-        w1.append(w-p_size)
-        h1.append(h-p_size)
-        for i in w1:
-            for j in h1:
-                patches.append((i,i+p_size, j,j+p_size))
-    else:
-        patches.append(img)
-    return patches[index]
-
-
-def imssave(imgs, img_path):
-    """
-    imgs: list, N images of size WxHxC
-    """
-    img_name, ext = os.path.splitext(os.path.basename(img_path))
-    for i, img in enumerate(imgs):
-        if img.ndim == 3:
-            img = img[:, :, [2, 1, 0]]
-        new_path = os.path.join(os.path.dirname(img_path), img_name+str('_{:04d}'.format(i))+'.png')
-        cv2.imwrite(new_path, img)
-
-
-
-'''
-# --------------------------------------------
-# image format conversion
-# --------------------------------------------
-# numpy(single) <--->  numpy(uint)
-# numpy(single) <--->  tensor
-# numpy(uint)   <--->  tensor
-# --------------------------------------------
-'''
-
-
-# --------------------------------------------
-# numpy(single) [0, 1] <--->  numpy(uint)
-# --------------------------------------------
-
-
-def uint2single(img):
-
-    return np.float32(img/MAX_PIXEL_VALUE)
-
-
-def single2uint(img):
-
-    return np.uint8((img.clip(0, 1)*MAX_PIXEL_VALUE).round())
-
-
-def uint162single(img):
-
-    return np.float32(img/65535.)
-
-
-def single2uint16(img):
-
-    return np.uint16((img.clip(0, 1)*65535.).round())
-
-
-# --------------------------------------------
-# numpy(uint) (HxWxC or HxW) <--->  tensor
-# --------------------------------------------
-
-
-# convert uint to 4-dimensional torch tensor
-def uint2tensor4(img):
-    if img.ndim == 2:
-        img = np.expand_dims(img, axis=2)
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float().div(MAX_PIXEL_VALUE).unsqueeze(0)
-
-
-# convert uint to 3-dimensional torch tensor
-def uint2tensor3(img):
-    if img.ndim == 2:
-        img = np.expand_dims(img, axis=2)
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float().div(MAX_PIXEL_VALUE)
-
-
-# convert 2/3/4-dimensional torch tensor to uint
-def tensor2uint(img):
-    img = img.data.squeeze().float().clamp_(0, 1).cpu().numpy()
-    if img.ndim == 3:
-        img = np.transpose(img, (1, 2, 0))
-    return img
-
-
-# --------------------------------------------
-# numpy(single) (HxWxC) <--->  tensor
-# --------------------------------------------
-
-
-# convert single (HxWxC) to 3-dimensional torch tensor
-def single2tensor3(img):
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float()
-
-
-# convert single (HxWxC) to 4-dimensional torch tensor
-def single2tensor4(img):
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float().unsqueeze(0)
-
-
-# convert torch tensor to single
-def tensor2single(img):
-    img = img.data.squeeze().float().cpu().numpy()
-    if img.ndim == 3:
-        img = np.transpose(img, (1, 2, 0))
-
-    return img
-
-# convert torch tensor to single
-def tensor2single3(img):
-    img = img.data.squeeze().float().cpu().numpy()
-    if img.ndim == 3:
-        img = np.transpose(img, (1, 2, 0))
-    elif img.ndim == 2:
-        img = np.expand_dims(img, axis=2)
-    return img
-
-
-def single2tensor5(img):
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1, 3).float().unsqueeze(0)
-
-
-def single32tensor5(img):
-    return torch.from_numpy(np.ascontiguousarray(img)).float().unsqueeze(0).unsqueeze(0)
-
-
-def single42tensor4(img):
-    return torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1, 3).float()
-
-"""
-# from skimage.io import imread, imsave
-def tensor2img(tensor, out_type=np.uint8, min_max=(0, 1)):
-    '''
-    Converts a torch Tensor into an image Numpy array of BGR channel order
-    Input: 4D(B,(3/1),H,W), 3D(C,H,W), or 2D(H,W), any range, RGB channel order
-    Output: 3D(H,W,C) or 2D(H,W), [0,255], np.uint8 (default)
-    '''
-    tensor = tensor.squeeze().float().cpu().clamp_(*min_max)  # squeeze first, then clamp
-    tensor = (tensor - min_max[0]) / (min_max[1] - min_max[0])  # to range [0,1]
-    n_dim = tensor.dim()
-    if n_dim == 4:
-        n_img = len(tensor)
-        img_np = make_grid(tensor, nrow=int(math.sqrt(n_img)), normalize=False).numpy()
-        img_np = np.transpose(img_np[[2, 1, 0], :, :], (1, 2, 0))  # HWC, BGR
-    elif n_dim == 3:
-        img_np = tensor.numpy()
-        img_np = np.transpose(img_np[[2, 1, 0], :, :], (1, 2, 0))  # HWC, BGR
-    elif n_dim == 2:
-        img_np = tensor.numpy()
-    else:
-        raise TypeError(
-            'Only support 4D, 3D and 2D tensor. But received with dimension: {:d}'.format(n_dim))
-    if out_type == np.uint8:
-        img_np = (img_np * 255.0).round()
-        # Important. Unlike matlab, numpy.uint8() WILL NOT round by default.
-    return img_np.astype(out_type)
-"""
-
-'''
-# --------------------------------------------
-# Augmentation, flipe and/or rotate
-# --------------------------------------------
-# The following two are enough.
-# (1) augmet_img: numpy image of WxHxC or WxH
-# (2) augment_img_tensor4: tensor image 1xCxWxH
-# --------------------------------------------
-'''
-
-
-def augment_img(img, mode=0):
-    '''Kai Zhang (github: https://github.com/cszn)
-    '''
-    if mode == 0:
-        return img
-    elif mode == 1:
-        return np.flipud(np.rot90(img))
-    elif mode == 2:
-        return np.flipud(img)
-    elif mode == 3:
-        return np.rot90(img, k=3)
-    elif mode == 4:
-        return np.flipud(np.rot90(img, k=2))
-    elif mode == 5:
-        return np.rot90(img)
-    elif mode == 6:
-        return np.rot90(img, k=2)
-    elif mode == 7:
-        return np.flipud(np.rot90(img, k=3))
-
-
-def augment_img_tensor4(img, mode=0):
-    '''Kai Zhang (github: https://github.com/cszn)
-    '''
-    if mode == 0:
-        return img
-    elif mode == 1:
-        return img.rot90(1, [2, 3]).flip([2])
-    elif mode == 2:
-        return img.flip([2])
-    elif mode == 3:
-        return img.rot90(3, [2, 3])
-    elif mode == 4:
-        return img.rot90(2, [2, 3]).flip([2])
-    elif mode == 5:
-        return img.rot90(1, [2, 3])
-    elif mode == 6:
-        return img.rot90(2, [2, 3])
-    elif mode == 7:
-        return img.rot90(3, [2, 3]).flip([2])
-
-
-def augment_img_tensor(img, mode=0):
-    '''Kai Zhang (github: https://github.com/cszn)
-    '''
-    img_size = img.size()
-    img_np = img.data.cpu().numpy()
-    if len(img_size) == 3:
-        img_np = np.transpose(img_np, (1, 2, 0))
-    elif len(img_size) == 4:
-        img_np = np.transpose(img_np, (2, 3, 1, 0))
-    img_np = augment_img(img_np, mode=mode)
-    img_tensor = torch.from_numpy(np.ascontiguousarray(img_np))
-    if len(img_size) == 3:
-        img_tensor = img_tensor.permute(2, 0, 1)
-    elif len(img_size) == 4:
-        img_tensor = img_tensor.permute(3, 2, 0, 1)
-
-    return img_tensor.type_as(img)
-
-
-def augment_img_np3(img, mode=0):
-    if mode == 0:
-        return img
-    elif mode == 1:
-        return img.transpose(1, 0, 2)
-    elif mode == 2:
-        return img[::-1, :, :]
-    elif mode == 3:
-        img = img[::-1, :, :]
-        img = img.transpose(1, 0, 2)
-        return img
-    elif mode == 4:
-        return img[:, ::-1, :]
-    elif mode == 5:
-        img = img[:, ::-1, :]
-        img = img.transpose(1, 0, 2)
-        return img
-    elif mode == 6:
-        img = img[:, ::-1, :]
-        img = img[::-1, :, :]
-        return img
-    elif mode == 7:
-        img = img[:, ::-1, :]
-        img = img[::-1, :, :]
-        img = img.transpose(1, 0, 2)
-        return img
-
-
-def augment_imgs(img_list, hflip=True, rot=True):
-    # horizontal flip OR rotate
-    hflip = hflip and random.random() < 0.5
-    vflip = rot and random.random() < 0.5
-    rot90 = rot and random.random() < 0.5
-
-    def _augment(img):
-        if hflip:
-            img = img[:, ::-1, :]
-        if vflip:
-            img = img[::-1, :, :]
-        if rot90:
-            img = img.transpose(1, 0, 2)
-        return img
-
-    return [_augment(img) for img in img_list]
-
-
-def augment(img1, img2):
-    augment_idx = random.randint(0, 5) # [0,1,2,3,4,5]
-    if augment_idx  < 4:
-        return tvF.rotate(img1, 90 * augment_idx), tvF.rotate(img2, 90 * augment_idx)
-    elif augment_idx == 4:
-        return tvF.hflip(img1), tvF.hflip(img2)
-    elif augment_idx == 5:
-        return tvF.vflip(img1), tvF.vflip(img2)
-    return img1, img2
-
-'''
-# --------------------------------------------
-# modcrop and shave
-# --------------------------------------------
-'''
-
-
-def modcrop(img_in, scale):
-    # img_in: Numpy, HWC or HW
-    img = np.copy(img_in)
-    if img.ndim == 2:
-        H, W = img.shape
-        H_r, W_r = H % scale, W % scale
-        img = img[:H - H_r, :W - W_r]
-    elif img.ndim == 3:
-        H, W, C = img.shape
-        H_r, W_r = H % scale, W % scale
-        img = img[:H - H_r, :W - W_r, :]
-    else:
-        raise ValueError('Wrong img ndim: [{:d}].'.format(img.ndim))
-    return img
-
-
-def shave(img_in, border=0):
-    # img_in: Numpy, HWC or HW
-    img = np.copy(img_in)
-    h, w = img.shape[:2]
-    img = img[border:h-border, border:w-border]
-    return img
 
 
 '''
@@ -481,19 +92,26 @@ def remove_nan(image):
 
 def scale(img, scaler):
     if scaler == 'noscale':
-        return img
+        return img, None, None
     elif scaler == 'division':
-        return img/65536.0
+        return img/65536.0, None, None
     elif scaler == 'norm':
         mmscale = MinMaxInterval()
-        return mmscale(img)
+        a, b = mmscale.get_limits(img)
+        return mmscale(img), a, b
     elif scaler == 'standard':
-        reshaped_img = img.reshape(-1, 1)
         sscaler = StandardScaler()
-        #sscaler.fit(reshaped_img)
-        return sscaler.fit_transform(reshaped_img).reshape(img.shape)
+        reshaped_img = img.reshape(-1, 1)
+        sscaler.fit(reshaped_img)
+        mu, sigma = sscaler.mean_, sscaler.scale_
+        return sscaler.fit_transform(reshaped_img).reshape(img.shape), mu, sigma
     elif scaler == 'arcsinh':
-        return np.arcsinh(img)
+        if isinstance(img, np.ndarray):
+            return np.arcsinh(img), None, None
+        else:
+            return torch.arcsinh(img), None, None
+    else:
+        raise Exception('Unknown scaler type!')
 
 
 # Descaler function that scales the denoised data back to the original data range
@@ -507,7 +125,12 @@ def descale(img, scaler, param1=None, param2=None):
     elif scaler == 'standard':
         return img*param2 + param1
     elif scaler == 'arcsinh':
-        return torch.sinh(img)
+        if isinstance(img, np.ndarray):
+            return np.sinh(img)
+        else:
+            return torch.sinh(img)
+    else:
+        raise Exception('Unknown scaler type!')
 
 '''
 # --------------------------------------------
@@ -519,8 +142,6 @@ def descale(img, scaler, param1=None, param2=None):
 # --------------------------------------------
 # PSNR
 # --------------------------------------------
-
-
 def calculate_psnr(img1, img2, border=0, max_pixel=MAX_PIXEL_VALUE):
     # img1 and img2 have range [0, MAX_PIXEL_VALUE]
     if not img1.shape == img2.shape:
@@ -818,9 +439,7 @@ def get_error_map(denoised, clean, exptime=140, mode='MAE'):
     clean[clean == 0] = epsilon
     clean = clean.reshape(h, w)
     
-    #return np.clip(error / clean, 0, 100)
-    #return error / ((roman.read_noise + roman.dark_current*exptime + roman.thermal_backgrounds['Y106']*exptime) / roman.gain)
-    
+
 '''
 # --------------------------------------------
 # Estimating variance of noise (Gaussian)
@@ -923,6 +542,104 @@ def inverse_generalized_anscombe(x, mu, sigma, gain=1.0):
     exact_inverse += mu
     exact_inverse[np.where(exact_inverse != exact_inverse)] = 0.0
     return exact_inverse
+
+def uMSE(image, target, source):
+    #source_b, source_c = extract_neighbors(source)
+    return np.mean((image - target) ** 2) #- np.mean((source_b - source_c) ** 2) / 2
+
+# Function to compute euclidean distance of two pixels
+def calculate_distance(coord1, coord2):
+    return np.sqrt((coord1[0] - coord2[0])**2 + (coord1[1] - coord2[1])**2)
+
+def calculate_iou(box_a, box_b):
+    x_min_a, y_min_a, x_max_a, y_max_a = box_a
+    x_min_b, y_min_b, x_max_b, y_max_b = box_b
+    x_min_inter = max(x_min_a, x_min_b)
+    y_min_inter = max(y_min_a, y_min_b)
+    x_max_inter = min(x_max_a, x_max_b)
+    y_max_inter = min(y_max_a, y_max_b)
+    if x_max_inter > x_min_inter and y_max_inter > y_min_inter:
+        area_intersection = (x_max_inter - x_min_inter) * (y_max_inter - y_min_inter)
+    else:
+        area_intersection = 0
+    area_a = (x_max_a - x_min_a) * (y_max_a - y_min_a)
+    area_b = (x_max_b - x_min_b) * (y_max_b - y_min_b)
+    area_union = area_a + area_b - area_intersection
+    if area_union == 0:
+        return 0
+    return area_intersection / area_union
+
+
+# Function to compute the different metrics
+def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, source=None):
+    pscale = PercentileInterval(PERCENTILE)
+    if unsupervised:
+        mse = uMSE(image, target, source)
+    else:
+        mse = np.mean((target - image)**2)
+    mae = np.mean(np.abs(target - image))
+    max_pixel = np.max(target) if np.max(target) < 1000.0 else 65536.0
+    psnr = 20*math.log10(max_pixel / math.sqrt(mse)) if mse >= 0 else None
+    snr = 10*np.log10(np.sum(image**2) / np.sum((image - target)**2))
+    ssim = calculate_ssim(pscale(target.squeeze()), pscale(image.squeeze()), max_pixel=max_pixel)
+    kl = kl_divergence(target.ravel(), image.ravel())
+    if skip_detection:
+        return [psnr, snr, ssim, kl, mse, mae, 0, 0, 0, 0], [], [], [], []
+    reference_objs = []
+    for x, y, c, d in list(zip(objs_X, objs_Y, objs_C, objs_D)):
+        if (x >= border and x <= target.shape[1] - border and y >= border and y <= target.shape[0] - border):
+            reference_objs.append((x, y, c, d))
+    assignments = [-1] * len(reference_objs)  # -1 means no detection is assigned
+    bkg_image = sep.Background(image.squeeze().astype(np.float64))
+    bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
+
+    try:
+        detected_objs = sep.extract(bkgsub_image, sigma_bkg, err=bkg_image.rms())
+    except:
+        return [psnr, snr, ssim, kl, mse, mae, 0, 100, len(reference_objs), 0], [], reference_objs, [], assignments
+    valid_objs = []
+    for idx_detected in range(len(detected_objs)):
+        # Check to see if object is not near margins
+        if (detected_objs['x'][idx_detected] >= border and detected_objs['x'][idx_detected] <= target.shape[1] - border and
+            detected_objs['y'][idx_detected] >= border and detected_objs['y'][idx_detected] <= target.shape[0] - border):
+            valid_objs.append(idx_detected)
+    detected_objs = detected_objs[valid_objs]
+    
+    potential_matches = []
+    for idx_reference, (x, y, c, d) in enumerate(reference_objs):
+        for idx_detected, detection_box in enumerate(detected_objs):
+            gt_box = (x - d//2, y - d//2, x + d//2, y + d//2)
+            radius = max(detected_objs['a'][idx_detected], detected_objs['b'][idx_detected])
+            detection_box = (detected_objs['x'][idx_detected] - radius//2, detected_objs['y'][idx_detected] - radius//2, detected_objs['x'][idx_detected] + radius//2,
+                             detected_objs['y'][idx_detected] + radius//2)
+            iou = calculate_iou(gt_box, detection_box)
+            x_min_a, y_min_a, x_max_a, y_max_a = detection_box
+            if d <= 2*(y_max_a - y_min_a)*(x_max_a - x_min_a):
+                potential_matches.append((iou, idx_reference, idx_detected))
+    potential_matches.sort(reverse=True, key=lambda x:x[0])
+    used_detections = set()
+    for iou, idx_reference, idx_detected in potential_matches:
+        if assignments[idx_reference] == -1 and idx_detected not in used_detections:
+            assignments[idx_reference] = idx_detected
+            used_detections.add(idx_detected)
+
+    false_alarms = (len(detected_objs) - len(used_detections))*100 / len(detected_objs) if len(detected_objs) else 0
+    detection_rate = len([obj for obj in assignments if obj != -1])*100 / len(reference_objs) if len(reference_objs) else 0
+    return [psnr, snr, ssim, kl, mse, mae, len(detected_objs), false_alarms, len(reference_objs), detection_rate], detected_objs, reference_objs, used_detections, assignments
+
+# Function to print the metrics
+def summarize_metrics(model_results, metrics_list, aggregate=False):
+    model_names = list(model_results.keys())
+    headers = ['Model'] + metrics_list
+    if aggregate:
+        table_data = [[model] + [statistics.mean(metrics[model_name]) for model_name in metrics_list] for model, metrics in model_results.items()]
+        return '\n' + tabulate(table_data, headers, tablefmt='fancy_grid')
+    else:
+        table_data = [[model] + [metrics[metric][-1] for metric in metrics_list] for model, metrics in model_results.items()]
+        return '\n' + tabulate(table_data, headers)
+
+
+
 
 if __name__ == '__main__':
     pass
