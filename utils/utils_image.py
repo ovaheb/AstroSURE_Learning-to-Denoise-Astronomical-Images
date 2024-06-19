@@ -172,28 +172,6 @@ def imssave(imgs, img_path):
         cv2.imwrite(new_path, img)
 
 
-def split_imageset(original_dataroot, taget_dataroot, n_channels=3, p_size=512, p_overlap=96, p_max=800):
-    """
-    split the large images from original_dataroot into small overlapped images with size (p_size)x(p_size), 
-    and save them into taget_dataroot; only the images with larger size than (p_max)x(p_max)
-    will be splitted.
-
-    Args:
-        original_dataroot:
-        taget_dataroot:
-        p_size: size of small images
-        p_overlap: patch size in training is a good choice
-        p_max: images with smaller size than (p_max)x(p_max) keep unchanged.
-    """
-    paths = get_image_paths(original_dataroot)
-    for img_path in paths:
-        # img_name, ext = os.path.splitext(os.path.basename(img_path))
-        img =  _uint(img_path, n_channels=n_channels)
-        patches = patches_from_image(img, p_size, p_overlap, p_max)
-        imssave(patches, os.path.join(taget_dataroot, os.path.basename(img_path)))
-        #if original_dataroot == taget_dataroot:
-        #del img_path
-
 
 '''
 # --------------------------------------------
@@ -574,7 +552,7 @@ def calculate_ssim(img1, img2, border=0, max_pixel=MAX_PIXEL_VALUE):
     img2 = img2[border:h-border, border:w-border]
     
     if img1.ndim == 2:
-        return ssim(img1, img2)
+        return ssim(img1, img2, max_pixel)
     elif img1.ndim == 3:
         if img1.shape[2] == 3:
             ssims = []
@@ -644,7 +622,7 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         frame = fits_img[frame_index].data
     
     if len(frame.shape) == 2:
-        frame = np.expand_dims(np.float32(frame), axis=2)
+        frame = np.expand_dims(np.float32(frame), axis=0)
     elif len(frame.shape) == 3 and frame.shape[2] <= 5:
         frame = np.transpose(frame, (2, 0, 1))
     frame = remove_nan(frame)
@@ -782,10 +760,11 @@ def add_noise_galsim(img, rng, header, subtract_bkg=False, idx_noisy=0):
     roman.applyIPC(noisy_realization)
     read_noise = galsim.GaussianNoise(image_rng, sigma=roman.read_noise)
     noisy_realization.addNoise(read_noise)
-    noisy_realization /= roman.gain
-    noisy_realization.quantize()
     if subtract_bkg:
         noisy_realization -= sky_image
+    ### Gain and quantization
+    noisy_realization /= roman.gain
+    noisy_realization.quantize()
     
     return np.expand_dims(noisy_realization.array, axis=0)
 
@@ -946,4 +925,4 @@ def inverse_generalized_anscombe(x, mu, sigma, gain=1.0):
     return exact_inverse
 
 if __name__ == '__main__':
-    img = imread_uint('test.bmp', 3)
+    pass
