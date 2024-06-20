@@ -241,9 +241,9 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         frame = hf_frame
     else:
         frame = fits_img[frame_index].data
-    
+    frame = np.float32(frame)
     if len(frame.shape) == 2:
-        frame = np.expand_dims(np.float32(frame), axis=0)
+        frame = np.expand_dims(frame, axis=0)
     elif len(frame.shape) == 3 and frame.shape[2] <= 5:
         frame = np.transpose(frame, (2, 0, 1))
     frame = remove_nan(frame)
@@ -543,7 +543,7 @@ def inverse_generalized_anscombe(x, mu, sigma, gain=1.0):
     exact_inverse[np.where(exact_inverse != exact_inverse)] = 0.0
     return exact_inverse
 
-def uMSE(image, target, source):
+def uMSE(image, target):
     #source_b, source_c = extract_neighbors(source)
     return np.mean((image - target) ** 2) #- np.mean((source_b - source_c) ** 2) / 2
 
@@ -571,10 +571,10 @@ def calculate_iou(box_a, box_b):
 
 
 # Function to compute the different metrics
-def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, source=None):
+def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False):
     pscale = PercentileInterval(PERCENTILE)
     if unsupervised:
-        mse = uMSE(image, target, source)
+        mse = uMSE(image, target)
     else:
         mse = np.mean((target - image)**2)
     mae = np.mean(np.abs(target - image))
