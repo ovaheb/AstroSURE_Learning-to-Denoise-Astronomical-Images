@@ -136,7 +136,7 @@ class UNet(nn.Module):
 
 
 class UNet_Upsample(nn.Module):
-    def __init__(self, in_channels = 1, out_channels = 1, mode='nearest', load_from = None):
+    def __init__(self, in_channels = 1, out_channels = 1, mode='bilinear', load_from = None):
         '''
         Initialize the UNet architecture.
         Args:

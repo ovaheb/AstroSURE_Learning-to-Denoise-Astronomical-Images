@@ -36,6 +36,7 @@ def test(argv):
     logger = logging.getLogger(result_path)
     date = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
     logger.info('Run Identifier: %s' %str(date))
+    logger.info('Result are saved at %s'%result_path)
     logger.info(args)
     logger.info('All visualizations are done using %.1f%% percentile of images!' %util.PERCENTILE)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -73,9 +74,9 @@ def test(argv):
             else:
                 dataset_name = configs[1]
                 ref_index = 2
-            scaler, train_loss, architecture = configs[ref_index], configs[ref_index+1], configs[ref_index+2]
+            scaler, train_loss, architecture = configs[ref_index], configs[ref_index + 1], configs[ref_index + 2]
             if len(configs) >= 8:
-                disable_clipping = configs[ref_index+4]=='noclip'
+                disable_clipping = configs[ref_index + 4] == 'noclip'
             else:
                 disable_clipping = False
 
@@ -83,7 +84,7 @@ def test(argv):
                 denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
                                         str(idx_model + 1), disable_clipping, upsample_mode=None)
             elif 'UNet-Upsample' in architecture:
-                upsample_mode = 'bilinear' if architecture=='UNet-Upsample' else architecture[13:]
+                upsample_mode = 'bilinear' if architecture=='UNet-Upsample' else architecture[14:]
                 denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss + ' ' +
                                         str(idx_model + 1), disable_clipping, upsample_mode=upsample_mode)
             elif architecture == 'DnCNN':
@@ -281,7 +282,7 @@ def test(argv):
                     if 'JWST' in args.data_path or denoiser.disable_clipping:
                         pass
                     else:
-                        pass #estimated = np.clip(estimated, 0.0, 65536.0)
+                        estimated = np.clip(estimated, 0.0, 65536.0)
                 start_idx += batch_size
                 
                 if args.combine_patches:
@@ -391,7 +392,7 @@ def test(argv):
             fig_dist.savefig(file_path + '_distributions.png', dpi=300)
             fig_err.savefig(file_path + '_error_maps.png', dpi=300)
             fig_res.savefig(file_path + '_residuals.png', dpi=300)
-            #plt.show()
+            plt.close()
         logger.info(util.summarize_metrics(metrics_total, metrics_list, aggregate=False))
         visual_counter += 1
 
@@ -409,12 +410,12 @@ def parse_args(argv):
     parser.add_argument('--filters', type=bool, default=False, help='Include simple filtering methods\' results')
     parser.add_argument('--img_channel', type=int, default=1, help='Number of channels of the image data')
     parser.add_argument('--patch_size', type=int, default=256, help='Size of the patches used for inference')
-    parser.add_argument('--visualize', type=bool, default=False, help='Show the visualizations')
+    parser.add_argument('--visualize', type=bool, default=True, help='Show the visualizations') # basically always visualizing!
     parser.add_argument('--structured_noise', type=bool, default=False, help='Add structured noise before inference')
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--sigma', type=int, default=3, help='Background sigma multiplier for object detection threshold')
-    parser.add_argument('--overlap', type=int, default=128, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--subtract_bkg', type=bool, default=False, help='Subtract background before inference')
+    parser.add_argument('--overlap', type=int, default=128, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--combine_patches', type=bool, default=False, help='Combine patches before inference')
     #parser.add_argument('--disable_logging', type=bool, default=False, help='Don\'t log results into WandB')
     args = parser.parse_args(argv)

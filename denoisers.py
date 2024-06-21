@@ -12,7 +12,7 @@ import bm3d
 ### Denoiser Classes ###
 
 class UNetDenoiser():
-    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, upsample_mode=True):
+    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, upsample_mode='bilinear'):
         self.img_channel = img_channel
         self.model_path = model_path
         self.name = 'UNet ' + name
