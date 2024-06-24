@@ -590,10 +590,10 @@ def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128,
     else:
         mse = np.mean((target - image)**2)
     mae = np.mean(np.abs(target - image))
-    max_pixel = np.max(target) if np.max(target) < 1000.0 else 65536.0
+    max_pixel = np.max(target) if unsupervised else 65536.0
     psnr = 20*math.log10(max_pixel / math.sqrt(mse)) if mse >= 0 else None
     snr = 10*np.log10(np.sum(image**2) / np.sum((image - target)**2))
-    ssim = calculate_ssim(pscale(target.squeeze()), pscale(image.squeeze()), max_pixel=max_pixel)
+    ssim = calculate_ssim(target.squeeze(), image.squeeze(), max_pixel=max_pixel)
     kl = kl_divergence(target.ravel(), image.ravel())
     if skip_detection:
         return [psnr, snr, ssim, kl, mse, mae, 0, 0, 0, 0], [], [], [], []

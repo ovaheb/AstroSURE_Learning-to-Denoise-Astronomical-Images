@@ -31,7 +31,6 @@ class UNetDenoiser():
     def load(self):
         if self.model_path != 'Random':
             self.model.load_state_dict(torch.load(self.model_path))
-            summary = (self.name, sum(p.numel() for p in self.model.parameters()), self.dataset_name, self.setting, self.scaler, self.train_loss)
         self.model.eval()
         
     def to(self, device):
@@ -41,6 +40,7 @@ class UNetDenoiser():
         denoised_image = self.model(image).detach().cpu().numpy()
         denoised_image = np.expand_dims(np.squeeze(denoised_image, axis=1), axis=-1)
         return denoised_image
+    
     def summarize(self):
         if self.model_path == 'Random':
             return 'Random UNet Upsample with %d parameters loaded!\n'%sum(p.numel() for p in self.model.parameters())

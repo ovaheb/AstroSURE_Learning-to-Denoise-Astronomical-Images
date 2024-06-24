@@ -11,6 +11,7 @@ from scipy.stats import entropy
 from tqdm import tqdm
 import wandb
 from astropy.io import fits
+import fitsio
 import sep
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -23,6 +24,7 @@ from utils import utils_logger
 #from skimage.restoration import estimate_sigma
 
 
+keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
 
 def test(argv):
     args = parse_args(argv)
@@ -59,7 +61,7 @@ def test(argv):
             denoiser = BaselineDenoiser()
         elif model_path[0] == 'Random':
             scaler = 'noscale'
-            denoiser = UNetDenoiser(model_path[0], args.img_channel, device, None, scaler, None, None, 'Upsample Random', upsample=True)
+            denoiser = UNetDenoiser(model_path[0], args.img_channel, device, None, scaler, None, None, 'Upsample Random', True, upsample_mode='bilinear')
         else:
             if model_path[0].split('/')[-1].split('.')[-1] == 'pth':
                 complete_model_path = model_path[0]
@@ -100,6 +102,17 @@ def test(argv):
     for denoiser in denoisers:
         metrics_total[denoiser.name] = {metric: [] for metric in metrics_list}
     img_list = [str(file) for file in Path(args.data_path).rglob('*') if (util.is_image_file(str(file)) or util.is_fits_file(str(file)))]
+    if 'keck' in args.data_path:
+        image_list1, image_list2, image_list3 = [], [], []
+        for file_path in img_list:
+            _, header = fitsio.read(file_path, header=True)
+            x, y = header['STAR-X'], header['STAR-Y']
+            if x < 384 and y < 388:
+                image_list1.append(file_path)
+            elif x < 384 and y >= 388:
+                image_list2.append(file_path)
+            else:
+                image_list3.append(file_path)
 
     ################################## Inference ##################################
     rng = np.random.default_rng(int(hashlib.sha256(data_path.encode()).hexdigest(), 16) % 1000) # Generate a random number for each dataset
@@ -112,7 +125,7 @@ def test(argv):
             img = np.float32(fits_file['SCI'].data)
             header = fits_file['SCI'].header
             if header['RA_V1'] <= 52.9642:
-                continue # Trainng set data
+                continue # Training data
             frame, _, _ = util.read_frame(hf_frame=img, scale_mode=2)
             random_index = random.choice([0, 1])
             other_index = 1 - random_index
@@ -122,6 +135,27 @@ def test(argv):
             unsupervised, is_table_hdu = True, False
             skip_detection = True
             nobjs, exptime = 0, 2748
+        elif 'keck' in args.data_path:
+            if img_name.split('/')[-1].split('.')[1] not in keck_val_files:
+                continue # Training set data
+            img = np.float32(fits_file[0].data)
+            header = fits_file[0].header
+            source, _, _ = util.read_frame(hf_frame=img, scale_mode=2)
+            x, y = header['STAR-X'], header['STAR-Y']
+            if x < 384 and y < 388:
+                fits_file2 = fits.open(random.choice(image_list1))
+            elif x < 384 and y >= 388:
+                fits_file2 = fits.open(random.choice(image_list2))
+            else:
+                fits_file2 = fits.open(random.choice(image_list3))
+
+            img2 = np.float32(fits_file2[0].data)
+            target, _, _ = util.read_frame(hf_frame=img2, scale_mode=2)
+            objs_X, objs_Y, objs_C, objs_D = [], [], [], []
+            unsupervised, is_table_hdu = True, False
+            skip_detection = True
+            nobjs, exptime = 0, 21
+            source, target = source[:, 2:-2, 2:-2], target[:, 2:-2, 2:-2]
         else:
             primary_hdu_idx = 0 if 'NOBJS' in fits_file[0].header else 1
             header = fits_file[primary_hdu_idx].header
@@ -140,7 +174,6 @@ def test(argv):
                                                                      rng=rng, header=header, subtract_bkg=args.subtract_bkg)
 
         target, source = np.transpose(target, (1, 2, 0)), np.transpose(source, (1, 2, 0))
-        
         ### Extract patches
         if height != target.shape[0] or width != target.shape[1]:
             height, width = target.shape[:2]
@@ -169,6 +202,7 @@ def test(argv):
                     image=source_patch, objs_X=objs_X, objs_Y=objs_Y, objs_C=objs_C, objs_D=objs_D, border=args.overlap, sigma_bkg=args.sigma, skip_detection=True, unsupervised=unsupervised)
                 for metric_name, metric in zip(metrics_list, metrics_baseline):
                     metrics_total['Noisy'][metric_name].append(metric)
+
         ############## Initialize plots for visualization #################
         if args.visualize and visual_counter < util.MAX_NUM_TO_VISUALIZE:
             ### Initialize parameters  for visualization
@@ -185,7 +219,6 @@ def test(argv):
             else:
                 source_to_visualize = source_patch
                 target_to_visualize = target_patch
-                    
             bins = 200
             norm = mcolors.LogNorm(vmin=0.1, vmax=1000.0, clip=True)
             num_subplots = n_denoisers + 2
@@ -265,7 +298,7 @@ def test(argv):
             
         
         ################# Inference #########################
-        batch_size = 128
+        batch_size = 128 if 'keck' not in args.data_path else 8
         for idx_denoiser in range(len(denoisers)):
             scaled_source, param1, param2 = util.scale(source, denoiser.scaler)
             denoiser = denoisers[idx_denoiser]
@@ -279,12 +312,10 @@ def test(argv):
                 with torch.no_grad():
                     estimated = denoiser.denoise(scaled_source_patches.to(device, non_blocking=True))
                     estimated = util.descale(estimated, denoiser.scaler, param1, param2)
-                    if 'JWST' in args.data_path or denoiser.disable_clipping:
+                    if 'JWST' in args.data_path or 'keck' in args.data_path or denoiser.disable_clipping:
                         pass
                     else:
                         estimated = np.clip(estimated, 0.0, 65536.0)
-                start_idx += batch_size
-                
                 if args.combine_patches:
                     for idx_estimated, (top, left) in enumerate(patch_coordinates[start_idx:end_idx]):
                         denoised_source[top:top + args.patch_size, left:left + args.patch_size, :] += estimated[idx_estimated, :, :, :]
@@ -292,7 +323,8 @@ def test(argv):
                 else:
                     for idx_estimated in range(estimated.shape[0]):
                         denoised_source.append(estimated[idx_estimated, :, :, :])
-            
+                start_idx += batch_size
+        
             if args.combine_patches:
                 denoised_source /= denoised_source_count
                 metrics, detected_objects_denoiser, reference_objects_denoiser, used_detections_denoiser, assignments_denoiser = util.calculate_metrics(target, denoised_source, objs_X,
@@ -300,6 +332,7 @@ def test(argv):
                 for metric_name, metric in zip(metrics_list, metrics):
                     metrics_total[denoiser.name][metric_name].append(metric)
                 denoised_source_to_visualize = denoised_source
+                
             else:
                 for idx_estimated, (top, left) in enumerate(patch_coordinates):
                     target_patch = target[top:top + args.patch_size, left:left + args.patch_size, :]
@@ -310,7 +343,8 @@ def test(argv):
                     for metric_name, metric in zip(metrics_list, metrics):
                         metrics_total[denoiser.name][metric_name].append(metric)
                 denoised_source_to_visualize = denoised_source_patch
-
+            
+            print(np.min(source_to_visualize), np.max(source_to_visualize), np.min(denoised_source_to_visualize), np.max(denoised_source_to_visualize))  
             ########### Visualize denoised images ##########
             if args.visualize and visual_counter < util.MAX_NUM_TO_VISUALIZE:
                 idx_image = idx_denoiser + 1
@@ -415,7 +449,7 @@ def parse_args(argv):
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--sigma', type=int, default=3, help='Background sigma multiplier for object detection threshold')
     parser.add_argument('--subtract_bkg', type=bool, default=False, help='Subtract background before inference')
-    parser.add_argument('--overlap', type=int, default=128, help='Number of overlapping pixels between adjacent windows')
+    parser.add_argument('--overlap', type=int, default=64, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--combine_patches', type=bool, default=False, help='Combine patches before inference')
     #parser.add_argument('--disable_logging', type=bool, default=False, help='Don\'t log results into WandB')
     args = parser.parse_args(argv)
