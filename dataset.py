@@ -31,154 +31,6 @@ def extract_image_size(path):
         axis1, axis2 =  256, 256
     return (axis1, axis2)
 
-"""
-################## Training by adding noise to GT frame ####################
-class TrainingDataset(Dataset):
-    def __init__(self, data_path, image_list, patch_size, supervised, scaler, img_channel, natural=False, galsim_noise=False, exptime_division=False):
-        '''
-        Dataset class for training with ground truth frames and added noise.
-        '''
-        self.data_path = data_path
-        self.image_list = image_list
-        self.patch_size = patch_size
-        self.supervised = supervised
-        self.scaler = scaler
-        self.img_channel = img_channel
-        self.natural = natural
-        self.galsim_noise = galsim_noise
-        self.exptime_division = exptime_division
-        self.image_size = extract_image_size(os.path.join(self.data_path, self.image_list[0]))
-        self.patch_per_image = math.ceil(self.image_size[0]/self.patch_size)*math.ceil(self.image_size[1]/self.patch_size)
-        self.gaussian_noise_level, self.poisson_noise_level = 50, 20 #35, 20
-        self.batch_counter, self.image_counter = 0, 0
-        self.clean_image, self.noisy_image, self.noisy_image2, self.current_exptime = None, None, None, None
-        self.read_image()
-        
-    def __len__(self):
-        return self.patch_per_image
-            
-    def read_image(self):
-        '''
-        Read and preprocess images from the dataset.
-        '''
-        #img = fits.open(os.path.join(self.data_path, self.image_list[self.image_counter]), memmap=False)
-        #primary_hdu_idx = 0 if 'NOBJS' in img[0].header else 1
-        #self.current_exptime = img[primary_hdu_idx].header['exptime']
-        #frame = util.read_frame(img, primary_hdu_idx, scale_mode=2)
-        img, header = fitsio.read(os.path.join(self.data_path, self.image_list[self.image_counter]), header=True)
-        frame = np.expand_dims(np.float32(img), axis=2)
-        self.current_exptime = header['exptime']
-        self.clean_image = np.transpose(np.clip(frame, 0, MAX_PIXEL_VALUE), (2, 0, 1))
-        #img.close()
-        gaussian_sample = np.random.uniform(0, self.gaussian_noise_level)
-        poisson_sample = np.random.uniform(0, self.poisson_noise_level)
-        self.noisy_image = util.scale(util.add_noise(self.clean_image, gaussian_sample, poisson_sample), self.scaler)
-        self.noisy_image2 = util.scale(util.add_noise(self.clean_image, gaussian_sample, poisson_sample), self.scaler)
-        self.clean_image = util.scale(self.clean_image, self.scaler)
-        self.image_counter += 1
-        if self.image_counter==len(self.image_list):
-            random.shuffle(self.image_list)
-            self.image_counter = 0
-        
-    def __getitem__(self, idx):
-        '''
-        Get a sample from the dataset.
-        '''
-        col = idx//(self.image_size[0]//self.patch_size)
-        row = idx%(self.image_size[1]//self.patch_size)
-        if self.supervised=='N2C':
-            img1 = self.clean_image
-        else:
-            img1 = self.noisy_image
-        img2 = self.noisy_image2
-        if self.exptime_division:
-            img1 /= self.current_exptime
-            img2 /= self.current_exptime
-        top, left = row*self.patch_size, col*self.patch_size
-        top = (self.image_size[0] - self.patch_size) if (top + self.patch_size) >= self.image_size[0] else top
-        left = (self.image_size[1] - self.patch_size) if (left + self.patch_size) >= self.image_size[1] else left
-        img1 = img1[:, top:top + self.patch_size, left:left + self.patch_size]
-        img2 = img2[:, top:top + self.patch_size, left:left + self.patch_size]
-        source, target = torch.tensor(img2).float(), torch.tensor(img1).float()
-        self.batch_counter += 1
-        if self.batch_counter==self.patch_per_image:
-            self.read_image()
-            self.batch_counter = 0
-        return util.augment(source, target)
-
-    
-class TestingDataset(Dataset):
-    def __init__(self, data_path, image_list, patch_size, scaler, img_channel, natural=False, galsim_noise=False, exptime_division=False):
-        '''
-        Dataset class for testing with ground truth frames and added noise.
-        '''
-        self.rng = np.random.default_rng(1024)
-        self.data_path = data_path
-        self.image_list = image_list
-        self.patch_size = patch_size
-        self.scaler = scaler
-        self.img_channel = img_channel
-        self.natural = natural
-        self.galsim_noise = galsim_noise
-        self.exptime_division = exptime_division
-        self.image_size = extract_image_size(os.path.join(self.data_path, self.image_list[0]))
-        self.patch_per_image = math.ceil(self.image_size[0]/self.patch_size)*math.ceil(self.image_size[1]/self.patch_size)
-        self.gaussian_noise_level, self.poisson_noise_level= 50, 20 #35,20
-        self.batch_counter, self.image_counter = 0, 0
-        self.clean_image, self.noisy_image, self.current_exptime, self.current_nobjs = None, None, None, None
-        self.read_image()
-        
-    def __len__(self):
-        return self.patch_per_image
-         
-    def read_image(self):
-        '''
-        Read and preprocess images from the dataset.
-        '''
-        img = fits.open(os.path.join(self.data_path, self.image_list[self.image_counter]))
-        primary_hdu_idx = 0 if 'NOBJS' in img[0].header else 1
-        self.clean_image = np.transpose(np.clip(util.read_frame(img, primary_hdu_idx), 0, MAX_PIXEL_VALUE), (2, 0, 1))
-        gaussian_sample = np.random.uniform(0, self.gaussian_noise_level)
-        poisson_sample = np.random.uniform(0, self.poisson_noise_level)
-        self.noisy_image = util.scale(util.add_noise(self.clean_image, gaussian_sample, poisson_sample), self.scaler)
-        if self.scaler == 'norm':
-            mmscale = MinMaxInterval()
-            self.param1, self.param2 = mmscale.get_limits(self.clean_image)
-        elif self.scaler == 'standard':
-            sscaler = StandardScaler()
-            sscaler.fit(img.reshape(-1, 1))
-            self.param1, self.param2 = sscaler.mean_, sscaler.scale_
-        else:
-            self.param1, self.param2 = img[primary_hdu_idx].header['exptime'], img[primary_hdu_idx].header['NOBJS']
-        self.clean_image = util.scale(self.clean_image, self.scaler)
-        self.image_counter += 1
-        if self.image_counter==len(self.image_list):
-            random.shuffle(self.image_list)
-            self.image_counter = 0
-        img.close()
-        
-    def __getitem__(self, idx):
-        col = idx//(self.image_size[0]//self.patch_size)
-        row = idx//(self.image_size[1]//self.patch_size)
-        target, source = self.clean_image, self.noisy_image
-        if self.exptime_division:
-            target /= self.current_exptime
-            source /= self.current_exptime
-        top, left = row*self.patch_size, col*self.patch_size
-        top = (self.image_size[0] - self.patch_size) if (top + self.patch_size) >= self.image_size[0] else top
-        left = (self.image_size[1] - self.patch_size) if (left + self.patch_size) >= self.image_size[1] else left
-        target = target[:, top:top + self.patch_size, left:left + self.patch_size]
-        source = source[:, top:top + self.patch_size, left:left + self.patch_size]
-        self.batch_counter += 1
-        if self.batch_counter==self.patch_per_image:
-            self.read_image()
-            self.batch_counter = 0
-        source, target = torch.tensor(source).float(), torch.tensor(target).float()
-        return source, target, self.param1, self.param2
-
-
-
-"""
     
 ################## Training using HDF5 file ####################
 class TrainingDataset(Dataset):
@@ -224,17 +76,17 @@ class TrainingDataset(Dataset):
 
         if 'JWST' in self.data_path:
             other_index = 1 - random_index
-            self.noisy_image = util.scale(self.clean_image, self.scaler)
+            self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
             self.noisy_image2, _, _ = util.read_frame(hf_frame=self.hf[self.image_list[self.image_counter]][other_index:other_index+1, :, :], scale_mode=scale_mode, noise_type='None', header=header)
-            self.noisy_image2 = util.scale(self.noisy_image2, self.scaler)
+            self.noisy_image2 = util.scale(self.noisy_image2, self.scaler)[0]
             self.gaussian_sample = header['VAR_RNOISE']
             self.poisson_sample = header['VAR_POISSON']
         else:
             self.gaussian_sample = self.rng.uniform(0, self.gaussian_noise_level) if self.gaussian_noise_level != None else 0
             self.poisson_sample = self.rng.uniform(0, self.poisson_noise_level) if self.poisson_noise_level != None else 0
-            self.noisy_image = util.scale(util.add_noise(self.clean_image, self.gaussian_sample, self.poisson_sample, self.noise_type, self.rng, header, self.subtract_bkg, 1), self.scaler)
-            self.noisy_image2 = util.scale(util.add_noise(self.clean_image, self.gaussian_sample, self.poisson_sample, self.noise_type, self.rng, header, self.subtract_bkg, 2), self.scaler)
-        self.clean_image = util.scale(self.clean_image, self.scaler)
+            self.noisy_image = util.scale(util.add_noise(self.clean_image, self.gaussian_sample, self.poisson_sample, self.noise_type, self.rng, header, self.subtract_bkg, 1), self.scaler)[0]
+            self.noisy_image2 = util.scale(util.add_noise(self.clean_image, self.gaussian_sample, self.poisson_sample, self.noise_type, self.rng, header, self.subtract_bkg, 2), self.scaler)[0]
+        self.clean_image = util.scale(self.clean_image, self.scaler)[0]
         self.image_counter += 1
         if self.image_counter==len(self.image_list):
             random.shuffle(self.image_list)
@@ -329,15 +181,12 @@ class TestingDataset(Dataset):
         else:
             self.param1, self.param2 = 0, 0
         
-        self.noisy_image = util.scale(self.noisy_image, self.scaler)
+        self.noisy_image = util.scale(self.noisy_image, self.scaler)[0]
 
         self.image_counter += 1
         if self.image_counter==len(self.image_list):
             random.shuffle(self.image_list)
             self.image_counter = 0
-
-
-
 
     def __getitem__(self, idx):
         idx = idx % self.patch_per_image
@@ -358,97 +207,152 @@ class TestingDataset(Dataset):
             self.batch_counter = 0
         source, target = torch.tensor(source).float(), torch.tensor(target).float()
         return source, target, self.param1, self.param2
-    '''
+    
+
+
+
+
+
+################## Dataloaders for Keck dataset ####################
+patch_coordinates = [(2, 2), (128, 2), (2, 258), (128, 258), (2, 514), (128, 514), (384, 388), (510, 388), (384, 518), (510, 518)]
+
+class TrainingDatasetKeck(Dataset):
+    def __init__(self, hf, data_path, image_list, patch_size, supervised, scaler, img_channel):
+        self.data_path = data_path
+        self.hf = hf
+        self.image_list = image_list
+        self.image_list1, self.image_list2, self.image_list3 = [], [], []
+        for file_path in image_list:
+            _, header = fitsio.read(file_path, header=True)
+            x, y = header['STAR-X'], header['STAR-Y']
+            if x < 384 and y < 388:
+                self.image_list1.append(file_path)
+            elif x < 384 and y >= 388:
+                self.image_list2.append(file_path)
+            else:
+                self.image_list3.append(file_path)
+        self.patch_size = patch_size
+        self.supervised = supervised
+        self.scaler = scaler
+        self.img_channel = img_channel
+        self.patch_per_image = 10
+        self.f1_size, self.f2_size, self.f3_size = len(self.image_list1), len(self.image_list2), len(self.image_list3)
+        self.perturbations = self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1) + self.f3_size*(self.f3_size-1)
         
-class TrainingDatasetNatural(Dataset):
-    def __init__(self, data_path, image_list, patch_size, supervised, img_channel):
+    def __len__(self):
+        return self.patch_per_image*self.perturbations
+
+    def __getitem__(self, idx):
+        patch_idx = idx//self.perturbations
+        left, top = patch_coordinates[patch_idx]
+        idx = idx % self.perturbations
+        if idx < self.f1_size*(self.f1_size-1):
+            idx1 = idx // (self.f1_size-1)
+            idx2 = idx % (self.f1_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list1
+        elif idx < self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1):
+            idx -= self.f1_size*(self.f1_size-1)
+            idx1 = idx // (self.f2_size-1)
+            idx2 = idx % (self.f2_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list2
+        else:
+            idx -= self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1)
+            idx1 = idx // (self.f3_size-1)
+            idx2 = idx % (self.f3_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list3
+
+        img1 = self.hf[image_list[idx1]]
+        header1 = json.loads(img1.attrs['Header'])
+        img1, _, _ = util.read_frame(hf_frame=img1, scale_mode=2, noise_type='None', header=header1)
+        img2 = self.hf[image_list[idx2]]
+        header2 = json.loads(img2.attrs['Header'])
+        img2, _, _ = util.read_frame(hf_frame=img2, scale_mode=2, noise_type='None', header=header2)
+
+        gaussian_sample = (header1['DETRN'] + header2['DETRN'])/2
+        poisson_sample = (img1.mean()/header1['DETGAIN'] + img2.mean()/header2['DETGAIN'])/2
+        img1 = util.scale(img1, self.scaler)[0]
+        img2 = util.scale(img2, self.scaler)[0]
+        img1 = img1[:, top:top + self.patch_size, left:left + self.patch_size]
+        img2 = img2[:, top:top + self.patch_size, left:left + self.patch_size]
+        source, target = torch.tensor(img2).float(), torch.tensor(img1).float()
+        return util.augment(source, target), gaussian_sample, poisson_sample
+
+    
+class TestingDatasetKeck(Dataset):
+    def __init__(self, hf, data_path, image_list, patch_size, scaler, img_channel):
+        self.hf = hf
         self.data_path = data_path
         self.image_list = image_list
+        self.image_list1, self.image_list2, self.image_list3 = [], [], []
+        for file_path in image_list:
+            _, header = fitsio.read(file_path, header=True)
+            x, y = header['STAR-X'], header['STAR-Y']
+            if x < 384 and y < 388:
+                self.image_list1.append(file_path)
+            elif x < 384 and y >= 388:
+                self.image_list2.append(file_path)
+            else:
+                self.image_list3.append(file_path)
         self.patch_size = patch_size
+        self.scaler = scaler
         self.img_channel = img_channel
-        self.supervised = supervised
-        self.noise_param = 50
+        self.patch_per_image = 10
+        self.f1_size, self.f2_size, self.f3_size = len(self.image_list1), len(self.image_list2), len(self.image_list3)
+        self.perturbations = self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1) + self.f3_size*(self.f3_size-1)
         
     def __len__(self):
-        return len(self.image_list)
-    
-    def augment(self, img1, img2):
-        augment_idx = random.randint(0, 5)
-        if augment_idx  < 4:
-            return tvF.rotate(img1, 90 * augment_idx), tvF.rotate(img2, 90 * augment_idx)
-        elif augment_idx == 4:
-            return tvF.hflip(img1), tvF.hflip(img2)
-        elif augment_idx == 5:
-            return tvF.vflip(img1), tvF.vflip(img2)
-        return img1, img2
-    
-    def add_noise(self, img):
-        h, w, c = img.shape
-        std = np.random.uniform(0,self.noise_param)
-        noise = np.random.normal(0, std, (h,w,c))
-        noise_img_temp = img + noise
-        noise_img = np.clip(noise_img_temp, 0, 255).astype(np.uint8)
-        return noise_img
-    
-    def __getitem__(self, idx):
-        image_name = os.path.join(self.data_path, self.image_list[idx])
-        img = io.imread(image_name)
-        if len(img.shape)!=3:
-            image_name = os.path.join(self.data_path, self.image_list[idx+1])
-            img = io.imread(image_name)
-        h, w, c = img.shape
-        if min(h, w) <  self.patch_size:
-            img = resize(img, (self.patch_size, self.patch_size), preserve_range=True)
-            h, w, c = img.shape
-        new_h, new_w = self.patch_size, self.patch_size
-        top = np.random.randint(0, h - new_h + 1)
-        left = np.random.randint(0, w - new_w + 1)
-        img1 = img[top:top + new_h, left:left + new_w]
-        if not self.supervised:
-            img1 = self.add_noise(img1)
-        img2 = self.add_noise(img1)
-        
-        target = tvF.to_tensor(img1.astype(np.float32))
-        source = tvF.to_tensor(img2.astype(np.float32))
-        return self.augment(source, target)
-    
-class TestingDatasetNatural(Dataset):
-    def __init__(self, test_path, image_list, patch_size, supervised, img_channel):
-        self.test_path = test_path
-        self.image_list = image_list
-        self.patch_size = patch_size
-        self.img_channel = img_channel
-        self.noise_param = 50
-        
-    def __len__(self):
-        return len(self.image_list)
+        return self.patch_per_image*len(self.image_list)
 
-    def add_noise(self, img):
-        h, w, c = img.shape
-        std = np.random.uniform(0, self.noise_param)
-        noise = np.random.normal(0, std, (h,w,c))
-        noise_img_temp = img + noise
-        noise_img = np.clip(noise_img_temp, 0, 255).astype(np.uint8)
-        return noise_img
-    
     def __getitem__(self, idx):
-        image_name = os.path.join(self.test_path,self.image_list[idx])
-        img = io.imread(image_name)
-        if len(img.shape)!=3:
-            image_name = os.path.join(self.test_path, self.image_list[idx+1])
-            img = io.imread(image_name)
-        h, w, c = img.shape
-        if min(h, w) <  self.patch_size:
-            img = resize(img,(self.patch_size, self.patch_size), preserve_range=True)
-            h, w, c = img.shape
-        new_h, new_w = self.patch_size, self.patch_size
-        top = np.random.randint(0, h - new_h + 1)
-        left = np.random.randint(0, w - new_w + 1)
-        img1 = img[top:top + new_h, left:left + new_w]
-        img2 = self.add_noise(img1)
-        
-        target = tvF.to_tensor(img1.astype(np.float32))
-        source = tvF.to_tensor(img2.astype(np.float32))
-        return source, target, 0, 0
-    
-'''
+        patch_idx = idx//self.perturbations
+        left, top = patch_coordinates[patch_idx]
+        idx = idx % self.perturbations
+        if idx < self.f1_size*(self.f1_size-1):
+            idx1 = idx // (self.f1_size-1)
+            idx2 = idx % (self.f1_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list1
+        elif idx < self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1):
+            idx -= self.f1_size*(self.f1_size-1)
+            idx1 = idx // (self.f2_size-1)
+            idx2 = idx % (self.f2_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list2
+        else:
+            idx -= self.f1_size*(self.f1_size-1) + self.f2_size*(self.f2_size-1)
+            idx1 = idx // (self.f3_size-1)
+            idx2 = idx % (self.f3_size-1)
+            if idx2 >= idx1:
+                idx2 += 1
+            image_list = self.image_list3
+        img1 = self.hf[image_list[idx1]]
+        header1 = json.loads(img1.attrs['Header'])
+        img1, _, _ = util.read_frame(hf_frame=img1, scale_mode=2, noise_type='None', header=header1)
+        img2 = self.hf[image_list[idx2]]
+        header2 = json.loads(img2.attrs['Header'])
+        img2, _, _ = util.read_frame(hf_frame=img2, scale_mode=2, noise_type='None', header=header2)
+
+
+        if self.scaler == 'norm':
+            mmscale = MinMaxInterval()
+            param1, param2 = mmscale.get_limits(img2)
+        elif self.scaler == 'standard':
+            sscaler = StandardScaler()
+            sscaler.fit(img2.reshape(-1, 1))
+            param1, param2 = sscaler.mean_, sscaler.scale_
+        else:
+            param1, param2 = 0, 0
+
+        img2 = util.scale(img2, self.scaler)[0]
+        img1 = img1[:, top:top + self.patch_size, left:left + self.patch_size]
+        img2 = img2[:, top:top + self.patch_size, left:left + self.patch_size]
+        source, target = torch.tensor(img2).float(), torch.tensor(img1).float()
+        return source, target, param1, param2

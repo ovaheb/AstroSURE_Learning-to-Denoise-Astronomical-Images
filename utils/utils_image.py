@@ -84,6 +84,16 @@ def is_fits_file(filename):
 # image processing process
 # --------------------------------------------
 '''
+def augment(img1, img2):
+    augment_idx = random.randint(0, 5) # [0,1,2,3,4,5]
+    if augment_idx  < 4:
+        return tvF.rotate(img1, 90 * augment_idx), tvF.rotate(img2, 90 * augment_idx)
+    elif augment_idx == 4:
+        return tvF.hflip(img1), tvF.hflip(img2)
+    elif augment_idx == 5:
+        return tvF.vflip(img1), tvF.vflip(img2)
+    return img1, img2
+
 def remove_nan(image):
     # replace NaN with 0.0 if exist
     if np.sum(np.isnan(image)) > 0:
@@ -334,6 +344,8 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         return frame, 0, 0
     else:
         return frame, 0, 0
+
+
 
 '''
 # --------------------------------------------

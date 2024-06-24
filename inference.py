@@ -260,7 +260,7 @@ def test(argv):
             fig_res, axs_res = plt.subplots(num_rows2, num_cols, figsize=(util.PLOT_SIZE*num_cols, util.PLOT_SIZE*num_rows2))
             axs_res = axs_res.flatten()
             image_obj4 = axs_res[0].imshow(np.abs(target_to_visualize - source_to_visualize), interpolation='nearest', cmap='gray_r', norm=norm)
-            axs_err[0].set_title('|GT - Noisy|')
+            axs_res[0].set_title('|GT - Noisy|')
             cmap4, _ = image_obj4.get_cmap(), plt.colorbar(image_obj4, ax=axs_res[0], fraction=0.046, pad=0.04)
             
         
@@ -274,8 +274,8 @@ def test(argv):
             start_idx = 0
             while start_idx < len(patch_coordinates):
                 end_idx = start_idx + batch_size if start_idx + batch_size<=len(patch_coordinates) else len(patch_coordinates)
-                scaled_source_patches = torch.permute(torch.stack([torch.from_numpy(scaled_source[top:top + args.patch_size, left:left + args.patch_size,
-                                                        :].astype(np.float32)) for top, left in patch_coordinates[start_idx:end_idx]], dim=0), (0, 3, 1, 2))
+                patches = [torch.from_numpy(scaled_source[top:top + args.patch_size, left:left + args.patch_size, :].astype(np.float32)) for top, left in patch_coordinates[start_idx:end_idx]]
+                scaled_source_patches = torch.permute(torch.stack(patches, dim=0), (0, 3, 1, 2))
                 with torch.no_grad():
                     estimated = denoiser.denoise(scaled_source_patches.to(device, non_blocking=True))
                     estimated = util.descale(estimated, denoiser.scaler, param1, param2)

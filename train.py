@@ -13,6 +13,7 @@ from unet_model import UNet, UNet_Upsample
 from dncnn_model import DnCNN as net
 import time
 from dataset import TrainingDataset, TestingDataset
+from dataset import TrainingDatasetKeck, TestingDatasetKeck
 from torch.utils.data import Dataset, DataLoader, random_split, RandomSampler
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -27,6 +28,8 @@ from prepare_dataset import prepare_dataset
 import datetime
 from pathlib import Path
 import json
+
+keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
 
 #@profile
 ### Main training script ###
@@ -43,6 +46,8 @@ def train(argv):
         args.noise_type = None
         args.disable_early_stopping = True
         args.disable_clipping = True
+    elif 'keck' in args.data_path:
+        unsupervised = True
     else:
         unsupervised = False
     if args.supervised=='N2Sa':
@@ -120,31 +125,36 @@ def train(argv):
     if not os.path.exists(checkpoint_path):
         os.mkdir(checkpoint_path)
     
-    hf_path = prepare_dataset(args.data_path)
+    hf_path = prepare_dataset(args.data_path, force=True)
     hf = h5py.File(hf_path, 'r', swmr=True)
+    
     ## Define the data path and train-test split
     file_list = [str(file) for file in Path(args.data_path).rglob('*') if (util.is_image_file(str(file)) or util.is_fits_file(str(file)))]
     dataset_file_length = len(file_list)
     if unsupervised:
-        train_image_list = [file for file in file_list if json.loads(hf[file].attrs['Header'])['RA_V1']<=52.9642]
-        val_image_list = [file for file in file_list if file not in train_image_list]
-        train_file_length = len(train_image_list)
-        val_file_length = dataset_file_length - train_file_length
+        if 'JWST' in args.data_path:
+            train_image_list = [file for file in file_list if json.loads(hf[file].attrs['Header'])['RA_V1']<=52.9642]
+            val_image_list = [file for file in file_list if file not in train_image_list]
+            train_file_length = len(train_image_list)
+            train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+            val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+        elif 'keck' in args.data_path:
+            val_image_list = [file for file in file_list if file.split('/')[-1].split('.')[1] in keck_val_files]
+            train_image_list = [file for file in file_list if file not in val_image_list]
+            train_dataset = TrainingDatasetKeck(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel)
+            val_dataset = TestingDatasetKeck(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel)
+        else:
+            raise Exception('Unsupervised training is only implemented for JWST and Keck datasets!')
     else:
         train_file_length = int(dataset_file_length * 0.8)
-        val_file_length = dataset_file_length - train_file_length
         random.seed(7)
         train_image_list = random.sample(file_list, train_file_length)
         random.seed(None)
         val_image_list = [file for file in file_list if file not in train_image_list]
-    
-
-    
-    train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
-    val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+        train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+        val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
     
     validation_batch_size = 1
-    
     train_length, val_length = len(train_dataset), len(val_dataset)
     sampler = RandomSampler(train_dataset)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4, sampler=sampler, generator=torch.Generator().manual_seed(1024))
@@ -152,10 +162,11 @@ def train(argv):
     print("Data is loaded! Training: %d patches, Validation: %d patches"%(train_length, val_length))
     
     # Define the model
+    load_from = None if args.load_from == None else args.load_from + '/best_model.pth'
     if args.architecture == 'UNet':
-        model = UNet(in_channels=args.img_channel, out_channels=args.img_channel, load_from=args.load_from + '/best_model.pth')
+        model = UNet(in_channels=args.img_channel, out_channels=args.img_channel, load_from=load_from)
     elif args.architecture == 'UNet-Upsample':
-        model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=args.load_from + '/best_model.pth')
+        model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=load_from)
     elif args.architecture == 'DnCNN':
         model = net.DnCNN()
     
@@ -209,11 +220,12 @@ def train(argv):
     
     if args.natural:
         min_pixel, max_pixel = 0.0, 256.0
-    elif unsupervised:
+    elif 'JWST' in args.data_path:
         min_pixel, max_pixel = -20.0, 238.0
+    elif 'keck' in args.data_path:
+        min_pixel, max_pixel = -627001326.0, 2114812364.0
     else:
-
-            min_pixel, max_pixel = 0.0, 65536.0
+        min_pixel, max_pixel = 0.0, 65536.0
     ## Trainng loop
     print("Starting Training ...")
     epoch_best_model = -1
@@ -270,7 +282,7 @@ def train(argv):
                 
                 elif args.noise_type=='P':
                     tau = args.SURE_tau * max_pixel
-                    param2 = param2.view(args.batch_size, 1, 1, 1).to(device)
+                    param2 = param2.view(param2.numel(), 1, 1, 1).to(device)
                     b = torch.rand_like(source) > 0.5
                     b = (2*b - 1) * 1.0
                     b = b.to(device)
@@ -282,8 +294,8 @@ def train(argv):
 
                 elif args.noise_type in ['PG', 'Galsim', 'None']:
                     tau1, tau2 = args.SURE_tau * max_pixel, args.SURE_tau2 * max_pixel
-                    param1 = param1.view(args.batch_size, 1, 1, 1).to(device)
-                    param2 = param2.view(args.batch_size, 1, 1, 1).to(device)
+                    param1 = param1.view(param1.numel(), 1, 1, 1).to(device)
+                    param2 = param2.view(param2.numel(), 1, 1, 1).to(device)
                     b = torch.rand_like(source) > 0.5
                     b = (2 * b - 1) * 1.0 
                     p = 0.7236 #0.5 + 0.5*np.sqrt(1/5)
