@@ -42,14 +42,18 @@ def train(argv):
         unsupervised = True 
         if args.supervised=='N2C':
             args.supervised = 'N2N'
-            print("JWST data is unsupervised, switching to N2N training!")
-        args.noise_type = None
+        args.noise_type = 'None'
         args.disable_early_stopping = True
         args.disable_clipping = True
-    elif 'keck' in args.data_path:
+    elif 'keck' in args.data_path or 'CFHT' in args.data_path:
         unsupervised = True
+        if args.supervised=='N2C':
+            args.supervised = 'N2N'
+        args.noise_type = 'None'
+        args.disable_early_stopping = True
     else:
         unsupervised = False
+
     if args.supervised=='N2Sa':
         args.loss = 'L2'
         args.scale = 'standard'
@@ -62,16 +66,20 @@ def train(argv):
         args.masking_scheme = None
         args.J_invariant_reconstruction = None
         args.invariance_strength = None
+
     if args.supervised!='EI':
         args.EI_transforms = None
         args.EI_strength = None
+
     if args.supervised=='SURE':
         args.scale = 'noscale'
     else:
         args.SURE_tau = None
         args.SURE_tau2 = None
+
     if args.architecture!='UNet-Upsample': 
         args.upsample_mode = None
+
     if args.noise_type=='Galsim':
         args.poisson_settings = None
         args.gaussian_settings = None
@@ -95,6 +103,7 @@ def train(argv):
         run_name += args.architecture + '-' + args.upsample_mode + '_'
     else:
         run_name += args.architecture + '_'
+
     if args.noise_type in ['None', 'Galsim']:
         run_name += args.noise_type
     else:
@@ -102,30 +111,29 @@ def train(argv):
             run_name += 'P' + str(args.poisson_settings) 
         if 'G' in args.noise_type:
             run_name += 'G' + str(args.gaussian_settings)
+
     if args.noise_type == 'Galsim':
         if args.subtract_bkg:
             run_name += '-nobkg'
         else:
             run_name += '-bkg'
+            
     if args.disable_clipping:
         run_name += '_noclip'
     else:
         run_name += '_clip'
 
-    run_name += '_' + str(date)
-    
+    run_name += '_' + str(date)    
     if args.enable_logging:
         run = initialize_wandb(args, run_name, date)
         print_model_parameters()
         print(run.dir)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
     checkpoint_path = args.checkpoint_path + '/' + run_name
     if not os.path.exists(checkpoint_path):
         os.mkdir(checkpoint_path)
-    
-    hf_path = prepare_dataset(args.data_path, force=True)
+    hf_path = prepare_dataset(args.data_path, force=True, method=args.inpainting_method, bias=args.bias)
     hf = h5py.File(hf_path, 'r', swmr=True)
     
     ## Define the data path and train-test split
@@ -143,6 +151,17 @@ def train(argv):
             train_image_list = [file for file in file_list if file not in val_image_list]
             train_dataset = TrainingDatasetKeck(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel)
             val_dataset = TestingDatasetKeck(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel)
+        elif 'CFHT' in args.data_path:
+            file_list = [f"{item}A" for item in file_list] + [f"{item}B" for item in file_list]
+            dataset_file_length = len(file_list)
+            train_file_length = int(dataset_file_length * 0.8)
+            random.seed(7)
+            train_image_list = random.sample(file_list, train_file_length)
+            random.seed(None)
+            val_image_list = [file for file in file_list if file not in train_image_list]
+            train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+            val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+            print(dataset_file_length)
         else:
             raise Exception('Unsupervised training is only implemented for JWST and Keck datasets!')
     else:
@@ -310,8 +329,8 @@ def train(argv):
                     meas2n = model(source - tau2 * c)
 
                     mse = (meas1 - source).pow(2).reshape(source.size(0), -1).mean(1)
-                    loss_div1 = (2 / tau1 * ((b * (param2 * source + param1**2)) * (meas2 - meas1))).reshape(source.size(0), -1).mean(1)
                     offset = param2 * source.reshape(source.size(0), -1).mean(1) + param1**2
+                    loss_div1 = (2 / tau1 * ((b * (param2 * source + param1**2)) * (meas2 - meas1))).reshape(source.size(0), -1).mean(1)
                     loss_div2 = (-2 * param1**2 * param2 / (tau2**2) * (c * (meas2p + meas2n - 2 * meas1))).reshape(source.size(0), -1).mean(1)
                     div = loss_div1 + loss_div2
                     loss = (mse - offset + div).mean()
@@ -408,7 +427,7 @@ def train(argv):
             if patience_idx == 0:
                 print("Early stopping: No improvement in validation loss for %d epochs!"%patience)
                 break
-        ## Log the metrics
+        ##Log the metrics
         #training_loss.append(epoch_train_loss / train_length)
         #val_loss.append(epoch_val_loss / val_length)   
         if args.enable_logging: 
@@ -428,6 +447,7 @@ def train(argv):
                 wandb.log({ "Training Loss Term 1": epoch_train_loss_term1 / train_length,
                             "Training Loss Term 2": epoch_train_loss_term2 / train_length,
                             "Training Loss Term 3": epoch_train_loss_term3 / train_length})
+                
         # Save checkpoints from training in case sth goes wrong
         if epoch%save_per_epoch==0:
             save_model(model, epoch + 1, checkpoint_path)
@@ -495,6 +515,8 @@ def initialize_wandb(args, run_name, date):
                     "SURE Tau2": args.SURE_tau2,
                     "Disable clipping": args.disable_clipping,
                     "Fix Learning Rate": args.fix_learning_rate,
+                    "Bias": args.bias,
+                    "Inpainting Method": args.inpainting_method,
                     "Pretrained weights loaded from": args.load_from}, mode=args.wandb_mode,)
     
 ## Parse arguments to train images with different settings and parameters
@@ -508,7 +530,7 @@ def parse_args(argv):
     parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--patch_size', type=int, default=256)
-    parser.add_argument('--architecture', type=str, default='UNet-Upsample', help='UNet/UNet-Upsample/DnCNN')
+    parser.add_argument('--architecture', type=str, default='UNet-Upsample', help='UNet/UNet-Upsample/DnCNN/Restormer')
     parser.add_argument('--upsample_mode', type=str, default='bilinear', help='nearest/bilinear/bicubic')
     parser.add_argument('--loss', type=str, default='L2', help='L2/L1/L2_L1Prior/L1_L1Prior')
     parser.add_argument('--scale', type=str, default='noscale', help='noscale/norm/standard/division/arcsinh/anscombe')
@@ -532,6 +554,10 @@ def parse_args(argv):
     parser.add_argument('--disable_clipping', type=bool, default=False)
     parser.add_argument('--fix_learning_rate', type=bool, default=False)
     parser.add_argument('--load_from', type=str, default=None, help='Path to the .pth file containig weights of the previously trained model')
+    parser.add_argument('--nan_removal', type=str, default='zero', help='zero/median/nearest/linear/cubic')
+    parser.add_argument('--bias', type=float, default=0.0)
+    parser.add_argument('--inpainting_method', type=str, default='nearest', help='zero/median/mean/nearest/linear/cubic')
+
     args = parser.parse_args(argv)
     return args
 

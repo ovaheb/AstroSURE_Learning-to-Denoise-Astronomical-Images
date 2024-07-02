@@ -15,6 +15,8 @@ from astropy.visualization import ZScaleInterval, MinMaxInterval, PercentileInte
 from matplotlib import rcParams
 from matplotlib.patches import Ellipse
 from scipy import signal
+from scipy.ndimage import median_filter
+from scipy.interpolate import griddata
 import galsim
 import galsim.roman as roman
 import torch.nn as nn
@@ -94,11 +96,45 @@ def augment(img1, img2):
         return tvF.vflip(img1), tvF.vflip(img2)
     return img1, img2
 
-def remove_nan(image):
-    # replace NaN with 0.0 if exist
+def remove_nan(image, method='zero'):
     if np.sum(np.isnan(image)) > 0:
-        image = np.nan_to_num(image, copy=False, nan=0.0)
+        if method == 'zero':
+            image = np.nan_to_num(image, copy=False, nan=0.0)
+        elif method == 'median':
+            nan_mask = np.isnan(image)
+            median_filtered = median_filter(image, size=5, mode='reflect')
+            image[nan_mask] = median_filtered[nan_mask]
+        else:
+            nan_mask = np.isnan(image)
+            coords = np.array(np.nonzero(~nan_mask)).T
+            values = image[~nan_mask]
+            it = np.array(np.nonzero(nan_mask)).T
+            interpolated_values = griddata(coords, values, it, method=method)
+            image[nan_mask] = interpolated_values
     return image
+
+def remove_nan_CCD(image, method='zero'):
+    image = np.where(image < 100, np.nan, image)
+    if np.sum(np.isnan(image)) > 0:
+        
+        if method == 'zero':
+            image = np.nan_to_num(image, copy=False, nan=0.0)
+        elif method == 'median':
+            nan_mask = np.isnan(image)
+            median_filtered = median_filter(image, size=7, mode='mirror')
+            image[nan_mask] = median_filtered[nan_mask]
+        else:
+            nan_mask = np.isnan(image)
+            interpolated_values = griddata(np.array(np.nonzero(~nan_mask)).T, image[~nan_mask], np.array(np.nonzero(nan_mask)).T, method=method)
+            image[nan_mask] = interpolated_values
+    return image
+
+def normalize_CCD_range(image, bias=0):
+    minimum = np.min(image)
+    maximum = np.max(image)
+    normalized_image = (image - minimum) / (maximum - minimum)
+    scaled_image = normalized_image * 65536.0 + bias
+    return scaled_image
 
 def scale(img, scaler):
     if scaler == 'noscale':
@@ -246,7 +282,7 @@ def kl_divergence(q, p, is_torch=False):
 # --------------------------------------------
 '''
 
-def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noise_type='None', poisson_params=(5,20), gaussian_params=(10,50), structured_noise=False, subtract_bkg=False, rng=None, header=None):
+def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noise_type='None', poisson_params=(5,20), gaussian_params=(10,50), structured_noise=False, subtract_bkg=False, rng=None, header=None, nan_removal='zero'):
     if frame_index == None:
         frame = hf_frame
     else:
@@ -256,7 +292,7 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         frame = np.expand_dims(frame, axis=0)
     elif len(frame.shape) == 3 and frame.shape[2] <= 5:
         frame = np.transpose(frame, (2, 0, 1))
-    frame = remove_nan(frame)
+    frame = remove_nan(frame, method=nan_removal)
     
     if scale_mode == 0:
         frame = np.clip(frame, 0, MAX_PIXEL_VALUE)
@@ -398,7 +434,6 @@ def add_noise_galsim(img, rng, header, subtract_bkg=False, idx_noisy=0):
     ### Gain and quantization
     noisy_realization /= roman.gain
     noisy_realization.quantize()
-    
     return np.expand_dims(noisy_realization.array, axis=0)
 
 '''

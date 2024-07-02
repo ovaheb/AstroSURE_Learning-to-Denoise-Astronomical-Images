@@ -156,6 +156,10 @@ def test(argv):
             skip_detection = True
             nobjs, exptime = 0, 21
             source, target = source[:, 2:-2, 2:-2], target[:, 2:-2, 2:-2]
+        elif 'CFHT' in args.data_path:
+            file_list = [f"{item}A" for item in file_list] + [f"{item}B" for item in file_list]
+            if img_name.split('/')[-1].split('.')[1] not in keck_val_files:
+                continue
         else:
             primary_hdu_idx = 0 if 'NOBJS' in fits_file[0].header else 1
             header = fits_file[primary_hdu_idx].header

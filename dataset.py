@@ -49,7 +49,7 @@ class TrainingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = extract_image_size(self.image_list[0])
+        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4581, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings
@@ -81,6 +81,11 @@ class TrainingDataset(Dataset):
             self.noisy_image2 = util.scale(self.noisy_image2, self.scaler)[0]
             self.gaussian_sample = header['VAR_RNOISE']
             self.poisson_sample = header['VAR_POISSON']
+        elif 'CFHT' in self.data_path:
+            self.gaussian_sample = header['gaussian']
+            self.poisson_sample = header['poisson']
+            self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
+            self.noisy_image2 = util.scale(self.clean_image, self.scaler)[0]
         else:
             self.gaussian_sample = self.rng.uniform(0, self.gaussian_noise_level) if self.gaussian_noise_level != None else 0
             self.poisson_sample = self.rng.uniform(0, self.poisson_noise_level) if self.poisson_noise_level != None else 0
@@ -138,7 +143,7 @@ class TestingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = extract_image_size(self.image_list[0])
+        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4581, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings
@@ -165,6 +170,9 @@ class TestingDataset(Dataset):
             self.current_exptime = header['XPOSURE']
             other_index = 1 - random_index
             self.noisy_image, _, _ = util.read_frame(hf_frame=self.hf[self.image_list[self.image_counter]][other_index:other_index+1, :, :], scale_mode=scale_mode, noise_type='None', header=header)
+        elif 'CFHT' in self.data_path:
+            self.current_exptime = header['EXPTIME']
+            self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
         else:
             self.current_exptime = header['EXPTIME']
             gaussian_sample = self.rng.uniform(0, self.gaussian_noise_level) if self.gaussian_noise_level != None else 0
@@ -274,8 +282,8 @@ class TrainingDatasetKeck(Dataset):
         header2 = json.loads(img2.attrs['Header'])
         img2, _, _ = util.read_frame(hf_frame=img2, scale_mode=2, noise_type='None', header=header2)
 
-        gaussian_sample = (header1['DETRN'] + header2['DETRN'])/2
-        poisson_sample = (img1.mean()/header1['DETGAIN'] + img2.mean()/header2['DETGAIN'])/2
+        gaussian_sample = header2['DETRN']/header2['DETGAIN']
+        poisson_sample = img2.mean()
         img1 = util.scale(img1, self.scaler)[0]
         img2 = util.scale(img2, self.scaler)[0]
         img1 = img1[:, top:top + self.patch_size, left:left + self.patch_size]
