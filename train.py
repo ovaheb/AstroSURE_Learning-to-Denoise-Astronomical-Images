@@ -10,11 +10,12 @@ from torch.optim import Adam, lr_scheduler
 import numpy as np
 import torchvision.transforms.functional as tvF
 from unet_model import UNet, UNet_Upsample
-from dncnn_model import DnCNN as net
+from dncnn_model import DnCNN
+from restormer_model import Restormer
 import time
 from dataset import TrainingDataset, TestingDataset
 from dataset import TrainingDatasetKeck, TestingDatasetKeck
-from torch.utils.data import Dataset, DataLoader, random_split, RandomSampler
+from torch.utils.data import Dataset, DataLoader, RandomSampler
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import argparse
@@ -73,6 +74,7 @@ def train(argv):
 
     if args.supervised=='SURE':
         args.scale = 'noscale'
+        args.loss = 'L2'
     else:
         args.SURE_tau = None
         args.SURE_tau2 = None
@@ -85,7 +87,7 @@ def train(argv):
         args.gaussian_settings = None
         if args.subtract_bkg == False:
             args.subtract_bkg = True
-            print("Training onGalsim noise is only possible with background subtraction!")
+            print("Training on Galsim noise is only possible with background subtraction!")
     else:
         args.subtract_bkg = None
         if args.noise_type=='P':
@@ -101,6 +103,8 @@ def train(argv):
     run_name += '_' + args.loss + '_'
     if args.architecture == 'UNet-Upsample':
         run_name += args.architecture + '-' + args.upsample_mode + '_'
+    elif args.architecture == 'DnCNN':
+        run_name += args.architecture + '-' + str(args.dncnn_depth) + '-' + str(args.patch_size) + '_'
     else:
         run_name += args.architecture + '_'
 
@@ -187,7 +191,11 @@ def train(argv):
     elif args.architecture == 'UNet-Upsample':
         model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=load_from)
     elif args.architecture == 'DnCNN':
-        model = net.DnCNN()
+        model = DnCNN(in_nc=args.img_channel, out_nc=args.img_channel, nb=args.dncnn_depth)
+    elif args.architecture == 'Restormer':
+        model = Restormer()
+    else:
+        raise Exception('Model architecture is not defined!')
     
     # Define the functions specific to each SSL training scheme
     if args.supervised=='N2V':
@@ -211,12 +219,12 @@ def train(argv):
         elif args.loss == 'L2-L1Prior':
             criterion = util.CustomLoss(loss_weight=loss_weight, prior_weight=prior_weight, loss=nn.MSELoss())
 
-    if args.fix_learning_rate:
-        optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-8, weight_decay=0, amsgrad=True)
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.5)
-    elif args.supervised=='EI':
+    if args.supervised=='EI':
         optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-8, amsgrad=False)
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', threshold_mode='rel', threshold=0.001, factor=0.5, patience=100)
+    elif args.fix_learning_rate:
+        optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-8, weight_decay=0, amsgrad=True)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.5)
     else:
         optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-8, weight_decay=0, amsgrad=True)
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', threshold_mode='rel', threshold=0.001, factor=0.5, patience=20, min_lr=0.0001)
@@ -413,9 +421,9 @@ def train(argv):
         torch.cuda.empty_cache()
         # Save the first instance of the model metrics
         if epoch==0:       
-            best_val_loss, best_val_l1, best_val_l2, best_val_psnr, best_val_kl = epoch_val_loss, epoch_val_l1, epoch_val_l2, epoch_val_psnr, epoch_val_kl
+            best_val_loss, best_val_l1, best_val_l2, best_val_psnr, best_val_kl = np.inf, np.inf, np.inf, -np.inf, np.inf
         
-        # Early stop if val loss does not improve 1% after 20 epochs
+        # Early stop if val loss does not improve 1% after a specified number of epochs set by patience
         if epoch_val_loss < 0.999*best_val_loss:
             best_val_loss, best_val_l1, best_val_l2, best_val_psnr, best_val_kl = epoch_val_loss, epoch_val_l1, epoch_val_l2, epoch_val_psnr, epoch_val_kl
             patience_idx = patience
@@ -427,9 +435,7 @@ def train(argv):
             if patience_idx == 0:
                 print("Early stopping: No improvement in validation loss for %d epochs!"%patience)
                 break
-        ##Log the metrics
-        #training_loss.append(epoch_train_loss / train_length)
-        #val_loss.append(epoch_val_loss / val_length)   
+              
         if args.enable_logging: 
             wandb.log({"Training Loss": epoch_train_loss / train_length,
                         "Validation Loss": epoch_val_loss / val_length,
@@ -451,7 +457,7 @@ def train(argv):
         # Save checkpoints from training in case sth goes wrong
         if epoch%save_per_epoch==0:
             save_model(model, epoch + 1, checkpoint_path)
-            print('Checkpoint at epoch {}; Train loss: {}; Validation loss: {}'.format(epoch + 1, epoch_train_loss / train_length, epoch_val_loss / val_length)) 
+            print('Checkpoint at epoch {}; Train loss: {}; Validation MAE: {}'.format(epoch + 1, epoch_train_loss / train_length, epoch_val_l1 / val_length)) 
     
 
     
@@ -533,7 +539,7 @@ def parse_args(argv):
     parser.add_argument('--architecture', type=str, default='UNet-Upsample', help='UNet/UNet-Upsample/DnCNN/Restormer')
     parser.add_argument('--upsample_mode', type=str, default='bilinear', help='nearest/bilinear/bicubic')
     parser.add_argument('--loss', type=str, default='L2', help='L2/L1/L2_L1Prior/L1_L1Prior')
-    parser.add_argument('--scale', type=str, default='noscale', help='noscale/norm/standard/division/arcsinh/anscombe')
+    parser.add_argument('--scale', type=str, default='noscale', help='noscale/norm/standard/division/arcsinh')
     parser.add_argument('--supervised', type=str, default='N2C', help='N2C/N2N/N2Se/N2Sa/S2S/EI/SURE/REI')
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--poisson_settings', type=int, default=20)
@@ -557,6 +563,7 @@ def parse_args(argv):
     parser.add_argument('--nan_removal', type=str, default='zero', help='zero/median/nearest/linear/cubic')
     parser.add_argument('--bias', type=float, default=0.0)
     parser.add_argument('--inpainting_method', type=str, default='nearest', help='zero/median/mean/nearest/linear/cubic')
+    parser.add_argument('--dncnn_depth', type=int, default=20)
 
     args = parser.parse_args(argv)
     return args

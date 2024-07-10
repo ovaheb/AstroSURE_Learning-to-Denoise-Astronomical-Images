@@ -9,6 +9,7 @@ from PIL import Image
 import json
 from pathlib import Path
 import math
+import sep
 
 def prepare_dataset(dataset_path, hf_root=os.environ.get('SLURM_TMPDIR'), force=False, method='nearest', bias=0.0):
     hf_path = os.path.join(hf_root, dataset_path.split('/')[-1])
@@ -44,13 +45,13 @@ def prepare_dataset(dataset_path, hf_root=os.environ.get('SLURM_TMPDIR'), force=
                             headerA, headerB = dict(hdu.read_header()), dict(hdu.read_header())
                             header = headerA
                             imgA, imgB = frame[30:-33, 32:1056], frame[30:-33, 1056:-32]
-                            imgA, imgB = util.remove_nan(imgA, method=method), util.remove_nan(imgB, method=method)
+                            imgA, imgB = util.remove_nan_CCD(imgA, method=method), util.remove_nan_CCD(imgB, method=method)
                             imgA, imgB = util.normalize_CCD_range(imgA, bias), util.normalize_CCD_range(imgB, bias)
                             readoutA, readoutB = header['RDNOISEA']/header['GAINA'], header['RDNOISEB']/header['GAINB']
-                            darkA = math.sqrt(header['DARKCUR']*(header['EXPTIME']/3600.0)/header['GAINA'])
-                            darkB = math.sqrt(header['DARKCUR']*(header['EXPTIME']/3600.0)/header['GAINB'])
-                            headerA['gaussian'], headerB['gaussian'] = readoutA + darkA, readoutB + darkB
-                            headerA['poisson'], headerB['poisson'] = float(np.mean(imgA)), float(np.mean(imgB))
+                            #darkA = math.sqrt(header['DARKCUR']*(header['EXPTIME']/3600.0)/header['GAINA'])
+                            #darkB = math.sqrt(header['DARKCUR']*(header['EXPTIME']/3600.0)/header['GAINB'])
+                            headerA['gaussian'], headerB['gaussian'] = readoutA, readoutB
+                            headerA['poisson'], headerB['poisson'] = float(sep.Background(imgA.astype(np.float64)).globalrms), float(sep.Background(imgB.astype(np.float64)).globalrms)
 
                     else:
                         img = np.float32(fits_file[1].read())

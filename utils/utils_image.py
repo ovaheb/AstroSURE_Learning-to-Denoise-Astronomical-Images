@@ -96,21 +96,9 @@ def augment(img1, img2):
         return tvF.vflip(img1), tvF.vflip(img2)
     return img1, img2
 
-def remove_nan(image, method='zero'):
+def remove_nan(image):
     if np.sum(np.isnan(image)) > 0:
-        if method == 'zero':
-            image = np.nan_to_num(image, copy=False, nan=0.0)
-        elif method == 'median':
-            nan_mask = np.isnan(image)
-            median_filtered = median_filter(image, size=5, mode='reflect')
-            image[nan_mask] = median_filtered[nan_mask]
-        else:
-            nan_mask = np.isnan(image)
-            coords = np.array(np.nonzero(~nan_mask)).T
-            values = image[~nan_mask]
-            it = np.array(np.nonzero(nan_mask)).T
-            interpolated_values = griddata(coords, values, it, method=method)
-            image[nan_mask] = interpolated_values
+        image = np.nan_to_num(image, copy=False, nan=0.0)
     return image
 
 def remove_nan_CCD(image, method='zero'):
@@ -619,7 +607,6 @@ def calculate_iou(box_a, box_b):
 
 # Function to compute the different metrics
 def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False):
-    pscale = PercentileInterval(PERCENTILE)
     if unsupervised:
         mse = uMSE(image, target)
     else:

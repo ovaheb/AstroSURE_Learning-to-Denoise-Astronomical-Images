@@ -1,4 +1,4 @@
-
+import torch
 import torch.nn as nn
 import basicblock as B
 import torch
@@ -8,7 +8,7 @@ import torch
 # DnCNN
 # --------------------------------------------
 class DnCNN(nn.Module):
-    def __init__(self, in_nc=1, out_nc=1, nc=64, nb=17, act_mode='BR'):
+    def __init__(self, in_nc=1, out_nc=1, nc=64, nb=17, act_mode='BR', load_from=None):
         """
         # ------------------------------------
         in_nc: channel number of input
@@ -21,17 +21,30 @@ class DnCNN(nn.Module):
         super(DnCNN, self).__init__()
         assert 'R' in act_mode or 'L' in act_mode, 'Examples of activation function: R, L, BR, BL, IR, IL'
         bias = True
-
-        m_head = B.conv(in_nc, nc, mode='C'+act_mode[-1], bias=bias)
-        m_body = [B.conv(nc, nc, mode='C'+act_mode, bias=bias) for _ in range(nb-2)]
+        m_head = B.conv(in_nc, nc, mode='C' + act_mode[-1], bias=bias)
+        m_body = [B.conv(nc, nc, mode='C' + act_mode, bias=bias) for _ in range(nb - 2)]
         m_tail = B.conv(nc, out_nc, mode='C', bias=bias)
-
         self.model = B.sequential(m_head, *m_body, m_tail)
+
+        ## initialize weights
+        if load_from is None:
+            self._init_weights()
+        else:
+            self.load_state_dict(torch.load(load_from))
+            print('Weights loaded from %s'%load_from)
 
     def forward(self, x):
         n = self.model(x)
-        return x-n
-
+        return x - n
+    
+    def _init_weights(self):
+        """
+        Initializes weights using He et al. (2015).
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight.data)
+                nn.init.constant_(m.bias.data, 0)
 
 # --------------------------------------------
 # IRCNN denoiser

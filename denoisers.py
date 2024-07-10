@@ -50,16 +50,36 @@ class UNetDenoiser():
     
     
 class DnCNNDenoiser():
-    def __init__(self, model_path, img_channel, device):
+    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, depth, model_patch_size):
         self.img_channel = img_channel
         self.model_path = model_path
-        self.model = DnCNN.DnCNN()
+        self.name = 'DnCNN ' + name
         self.device = device
+        self.setting = setting
+        self.scaler = scaler
+        self.dataset_name = dataset_name
+        self.train_loss = train_loss
+        self.disable_clipping = disable_clipping
+        self.depth = depth
+        self.model_patch_size = model_patch_size
+        self.model = DnCNN(in_nc=img_channel, out_nc=img_channel, nb=17)
+        self.load()
+    
+    def load(self):
+        self.model.load_state_dict(torch.load(self.model_path))
+        self.model.eval()
+
+    def to(self, device):
+        self.model = self.model.to(device)
 
     def denoise(self, image):
-        return image
+        denoised_image = self.model(image).detach().cpu().numpy()
+        denoised_image = np.expand_dims(np.squeeze(denoised_image), axis=-1)
+        return denoised_image
+    
     def summarize(self):
-        return 'DnCNN with %d parameters loaded!\n'%sum(p.numel() for p in self.model.parameters())
+        summary = (self.model_path, self.name, sum(p.numel() for p in self.model.parameters()), self.dataset_name, self.setting, self.scaler, self.train_loss)
+        return '%s\n%s with %d parameters trained on %s dataset with %s setting, %s scaler, and %s loss loaded!\n'%summary
         
     
 class BM3DDenoiser():
