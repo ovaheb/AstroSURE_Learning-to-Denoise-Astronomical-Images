@@ -1,8 +1,11 @@
 import os
+import subprocess
+import tempfile
 import sys
 import math
 import random
 import numpy as np
+import pandas as pd
 import torch
 import cv2
 import sep
@@ -12,11 +15,16 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from astropy.io import fits
 from astropy.visualization import ZScaleInterval, MinMaxInterval, PercentileInterval, AsymmetricPercentileInterval
+import astropy.units as u
+from astropy.coordinates import SkyCoord
+from astropy.table import Table
+from astropy.wcs import WCS
 from matplotlib import rcParams
-from matplotlib.patches import Ellipse
+from shapely.geometry import Point, Polygon
 from scipy import signal
 from scipy.ndimage import median_filter
 from scipy.interpolate import griddata
+import skvideo.measure
 import galsim
 import galsim.roman as roman
 import torch.nn as nn
@@ -26,6 +34,12 @@ from datetime import date
 from sklearn.preprocessing import StandardScaler
 from tabulate import tabulate
 import statistics
+import re
+import warnings
+
+sep.set_extract_pixstack(30000000)
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 ## Variables
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -280,7 +294,7 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         frame = np.expand_dims(frame, axis=0)
     elif len(frame.shape) == 3 and frame.shape[2] <= 5:
         frame = np.transpose(frame, (2, 0, 1))
-    frame = remove_nan(frame, method=nan_removal)
+    frame = remove_nan(frame)
     
     if scale_mode == 0:
         frame = np.clip(frame, 0, MAX_PIXEL_VALUE)
@@ -298,7 +312,6 @@ def read_frame(fits_img=None, frame_index=None, hf_frame=None, scale_mode=0, noi
         frame = add_noise(frame, gaussian, poisson, noise_type, rng, header, subtract_bkg)
     
     if structured_noise:
-        # TO DO: Implement hot cluster and bad cluster
         nlines = np.random.uniform(5, 21, 4).astype(int)
         # Hot row
         llines = np.random.uniform(300, roman.n_pix+1, nlines[0]).astype(int)
@@ -424,55 +437,6 @@ def add_noise_galsim(img, rng, header, subtract_bkg=False, idx_noisy=0):
     noisy_realization.quantize()
     return np.expand_dims(noisy_realization.array, axis=0)
 
-'''
-# --------------------------------------------
-# Functions to measure denoising quality
-# --------------------------------------------
-'''
-
-def plot_detected_objects(img_E_data, img_E_objects, img_H_data, img_H_objects, plot_size, gt_objs):
-    plt.rcParams.update({'font.size': 9})
-    fig, ax = plt.subplots(figsize=(plot_size*2,plot_size), ncols=2)
-    m, s = np.mean(img_E_data), np.std(img_E_data)
-    im = ax[0].imshow(img_E_data, interpolation='nearest', vmin=m-s, vmax=m+s, cmap='gray')
-    ax[0].set_title("Detected objects from denoised : {} object(:s)".format(len(img_E_objects)))
-    # plot an ellipse for each object
-    for i in range(len(img_E_objects)):
-        e = Ellipse(xy=(img_E_objects['x'][i], img_E_objects['y'][i]), width=6*img_E_objects['a'][i],
-                    height=6*img_E_objects['b'][i], angle=img_E_objects['theta'][i] * 180. / np.pi)
-        e.set_facecolor('none')
-        e.set_edgecolor('red')
-        ax[0].add_artist(e)
-    ax[0].set_xticks([])
-    ax[0].set_yticks([])           
-    m, s = np.mean(img_H_data), np.std(img_H_data)
-    im = ax[1].imshow(img_H_data, interpolation='nearest', vmin=m-s, vmax=m+s, cmap='gray')
-    ax[1].set_title("Objects in ground truth : {} object(:s)".format(gt_objs if gt_objs is not None else len(img_H_objects)))
-    # plot an ellipse for each object
-    if gt_objs == None:
-        for i in range(len(img_H_objects)):
-            e = Ellipse(xy=(img_H_objects['x'][i], img_H_objects['y'][i]), width=6*img_H_objects['a'][i],
-                        height=6*img_H_objects['b'][i], angle=img_H_objects['theta'][i] * 180. / np.pi)
-            e.set_facecolor('none')
-            e.set_edgecolor('red')
-            ax[1].add_artist(e)
-    ax[1].set_xticks([])
-    ax[1].set_yticks([])
-    plt.subplots_adjust(wspace=0)
-    plt.show()
-    
-def get_error_map(denoised, clean, exptime=140, mode='MAE'):
-    if not denoised.shape == clean.shape:
-        raise ValueError('Input images must have the same dimensions.')
-    h, w = denoised.shape[:2]
-    if mode == 'MAE':
-        error = np.abs(denoised - clean)
-    elif mode == 'MSE':
-        error = (denoised - clean)**2
-    
-    clean = clean.flatten()
-    clean[clean == 0] = epsilon
-    clean = clean.reshape(h, w)
     
 
 '''
@@ -604,9 +568,97 @@ def calculate_iou(box_a, box_b):
         return 0
     return area_intersection / area_union
 
+def convert_to_degrees(ra_hms, dec_dms):
+    coord = SkyCoord(ra=ra_hms, dec=dec_dms, unit=(u.hourangle, u.deg))
+    return coord.ra.deg, coord.dec.deg
+
+def is_inside_polygon(polygon, ra, dec):
+    point = Point(ra, dec)
+    return polygon.contains(point)
+
+def filter_objects(catalog, header, aorb, wcs):
+    if aorb == 'A':
+        x2, x1, y2, y1 = [int(element) for element in re.split(r'[\[\],:]', header['DETSECA'])[1:-1]]
+    elif aorb == 'B':
+        x1, x2, y2, y1 = [int(element) for element in re.split(r'[\[\],:]', header['DETSECB'])[1:-1]]
+    y1, y2 = y1 + 2, y2 - 2
+    ra1, dec1 = wcs.wcs_pix2world(x1, y1, 0)
+    ra2, dec2 = wcs.wcs_pix2world(x2, y1, 0)
+    ra3, dec3 = wcs.wcs_pix2world(x2, y2, 0)
+    ra4, dec4 = wcs.wcs_pix2world(x1, y2, 0)
+    vertices = [(ra1, dec1), (ra2, dec2), (ra3, dec3), (ra4, dec4)]
+    polygon = Polygon(vertices)
+    start_idx = np.searchsorted(catalog['RA'], min(ra1, ra2, ra3, ra4), side='left')
+    end_idx = np.searchsorted(catalog['RA'], max(ra1, ra2, ra3, ra4), side='right')
+    subset_catalog = catalog[start_idx:end_idx]
+    inside_mask = np.array([is_inside_polygon(polygon, ra, dec) for ra, dec in zip(subset_catalog['RA'], subset_catalog['DEC'])])
+    filtered_catalog = subset_catalog[inside_mask]
+    coords = SkyCoord(ra=filtered_catalog['RA'], dec=filtered_catalog['DEC'], unit='deg')
+    x, y = wcs.world_to_pixel(coords)
+    filtered_catalog['X'] = x - x1
+    filtered_catalog['Y'] = y - y1
+    filtered_catalog['MAJOR'] = filtered_catalog['R_MAG_AUTO']
+    filtered_catalog['MINOR'] = filtered_catalog['R_MAG_AUTO']
+    filtered_catalog['ANGLE'] = filtered_catalog['R_MAG_AUTO']
+    return filtered_catalog, (x1, y1)
 
 # Function to compute the different metrics
-def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False):
+def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, elliptical=False):
+    bkg_image = sep.Background(image.squeeze().astype(np.float64))
+    bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
+    try:
+        objects = sep.extract(bkgsub_image, sigma_bkg, err=bkg_image.rms())
+    except:
+        raise Exception('Error in object detection')
+    objects = objects[np.maximum(objects['a'], objects['b']) < 100]
+    devnull = open(os.devnull, 'w')
+    detection_results = tempfile.NamedTemporaryFile(suffix='.fits')
+    catalog_results = tempfile.NamedTemporaryFile(suffix='.fits')
+    matching_results = tempfile.NamedTemporaryFile(suffix='.fits')
+    if unsupervised:
+        pixel_scale = (header['PIXSCAL1'] + header['PIXSCAL2']) / 2
+        wcs = WCS(header)
+        
+        catalog_table = filter_objects(catalog, header, aorb, wcs)
+        catalog_table.write(catalog_results.name, overwrite=True) #('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE', 'R_MAG_AUTO')
+        
+        if aorb == 'A':
+            ra, dec = wcs.wcs_pix2world(objects['x'] + 32, objects['y'] + 3, 0)
+        elif aorb == 'B':
+            ra, dec = wcs.wcs_pix2world(objects['x'] + 1056, objects['y'] + 3, 0)
+        else:
+            raise ValueError('Unknown amplifier!')
+        detection_table = Table([objects['x'], objects['y'], ra, dec, objects['a'], objects['b'], np.degrees(objects['theta'])], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE'))
+        detection_table.write(detection_results.name, overwrite=True)
+        
+        process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=sky', 'params=1', 'values1=RA DEC', 
+                                    'values2=RA DEC', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
+        
+    else:
+        wcs = WCS(naxis=2)
+        pixel_scale = roman.pixel_scale #arcsec/pixel
+        wcs.wcs.crpix = [header['NAXIS1'] / 2, header['NAXIS2'] / 2]
+        wcs.wcs.crval = [header['RA'], header['DEC']]
+        wcs.wcs.cdelt = np.array([-pixel_scale / 3600, pixel_scale / 3600])
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]    
+        
+        ra, dec = wcs.wcs_pix2world(objects['x'], objects['y'], 0)
+        detection_table = Table([objects['x'], objects['y'], ra, dec, objects['a']*pixel_scale, objects['b']*pixel_scale, np.degrees(objects['theta'])], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE'))
+        detection_table.write(detection_results.name, overwrite=True)
+        
+        ra2, dec2 = wcs.wcs_pix2world(catalog['Object X'], catalog['Object Y'], 0)
+        catalog_table = Table([catalog['Object X'], catalog['Object Y'], ra2, dec2, catalog['Object Dimension']*pixel_scale, catalog['Object Dimension']*catalog['Object Ratio']*pixel_scale,
+                             np.degrees(catalog['Object Angle'] + catalog['Object Initial Angle']), catalog['Object Type']], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE', 'Type'))
+        catalog_table.write(catalog_results.name, overwrite=True)
+    
+        if elliptical:
+            process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=skyellipse', 'params=' +
+                                        str(np.mean(catalog['Object Dimension'])*pixel_scale), 'values1=RA DEC MAJOR MINOR ANGLE', 'values2=RA DEC MAJOR MINOR ANGLE', 'find=best',
+                                        'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
+        else:
+            process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=2d', 'params=9', 'values1=' + 'X Y', 
+                            'values2=' + 'X Y', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
+        
     if unsupervised:
         mse = uMSE(image, target)
     else:
@@ -617,49 +669,25 @@ def calculate_metrics(target, image, objs_X, objs_Y, objs_C, objs_D, border=128,
     snr = 10*np.log10(np.sum(image**2) / np.sum((image - target)**2))
     ssim = calculate_ssim(target.squeeze(), image.squeeze(), max_pixel=max_pixel)
     kl = kl_divergence(target.ravel(), image.ravel())
-    if skip_detection:
-        return [psnr, snr, ssim, kl, mse, mae, 0, 0, 0, 0], [], [], [], []
-    reference_objs = []
-    for x, y, c, d in list(zip(objs_X, objs_Y, objs_C, objs_D)):
-        if (x >= border and x <= target.shape[1] - border and y >= border and y <= target.shape[0] - border):
-            reference_objs.append((x, y, c, d))
-    assignments = [-1] * len(reference_objs)  # -1 means no detection is assigned
-    bkg_image = sep.Background(image.squeeze().astype(np.float64))
-    bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
-
-    try:
-        detected_objs = sep.extract(bkgsub_image, sigma_bkg, err=bkg_image.rms())
-    except:
-        return [psnr, snr, ssim, kl, mse, mae, 0, 100, len(reference_objs), 0], [], reference_objs, [], assignments
-    valid_objs = []
-    for idx_detected in range(len(detected_objs)):
-        # Check to see if object is not near margins
-        if (detected_objs['x'][idx_detected] >= border and detected_objs['x'][idx_detected] <= target.shape[1] - border and
-            detected_objs['y'][idx_detected] >= border and detected_objs['y'][idx_detected] <= target.shape[0] - border):
-            valid_objs.append(idx_detected)
-    detected_objs = detected_objs[valid_objs]
-    
-    potential_matches = []
-    for idx_reference, (x, y, c, d) in enumerate(reference_objs):
-        for idx_detected, detection_box in enumerate(detected_objs):
-            gt_box = (x - d//2, y - d//2, x + d//2, y + d//2)
-            radius = max(detected_objs['a'][idx_detected], detected_objs['b'][idx_detected])
-            detection_box = (detected_objs['x'][idx_detected] - radius//2, detected_objs['y'][idx_detected] - radius//2, detected_objs['x'][idx_detected] + radius//2,
-                             detected_objs['y'][idx_detected] + radius//2)
-            iou = calculate_iou(gt_box, detection_box)
-            x_min_a, y_min_a, x_max_a, y_max_a = detection_box
-            if d <= 2*(y_max_a - y_min_a)*(x_max_a - x_min_a):
-                potential_matches.append((iou, idx_reference, idx_detected))
-    potential_matches.sort(reverse=True, key=lambda x:x[0])
-    used_detections = set()
-    for iou, idx_reference, idx_detected in potential_matches:
-        if assignments[idx_reference] == -1 and idx_detected not in used_detections:
-            assignments[idx_reference] = idx_detected
-            used_detections.add(idx_detected)
-
-    false_alarms = (len(detected_objs) - len(used_detections))*100 / len(detected_objs) if len(detected_objs) else 0
-    detection_rate = len([obj for obj in assignments if obj != -1])*100 / len(reference_objs) if len(reference_objs) else 0
-    return [psnr, snr, ssim, kl, mse, mae, len(detected_objs), false_alarms, len(reference_objs), detection_rate], detected_objs, reference_objs, used_detections, assignments
+    niqe_metric = skvideo.measure.niqe(image)
+    _ = process.communicate()
+    with fits.open(matching_results.name) as matching_results_fits:
+        results = matching_results_fits[1].data
+        results = pd.DataFrame(results)
+        if not unsupervised:
+            results = results.applymap(lambda x: np.nan if isinstance(x, (int, float)) and x < -100000 else x)
+            results['MAJOR_DET'], results['MINOR_DET'] = results['MAJOR_DET']/pixel_scale, results['MINOR_DET']/pixel_scale
+            results['MAJOR_CAT'], results['MINOR_CAT'] = results['MAJOR_CAT']/pixel_scale, results['MINOR_CAT']/pixel_scale
+            
+    detected_objs = results['RA_DET'].notnull().sum()
+    all_objs = results['RA_CAT'].notnull().sum()
+    correct_detections = results['Separation'].notnull().sum()
+    missed = results['RA_DET'].isnull().sum()
+    false_alarms = results['RA_CAT'].isnull().sum()
+    detection_results.close()
+    catalog_results.close()
+    matching_results.close()
+    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, false_alarms/detected_objs, all_objs, correct_detections/all_objs], results
 
 # Function to print the metrics
 def summarize_metrics(model_results, metrics_list, aggregate=False):
@@ -671,7 +699,6 @@ def summarize_metrics(model_results, metrics_list, aggregate=False):
     else:
         table_data = [[model] + [metrics[metric][-1] for metric in metrics_list] for model, metrics in model_results.items()]
         return '\n' + tabulate(table_data, headers)
-
 
 
 

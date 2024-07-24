@@ -238,7 +238,7 @@ def train(argv):
         print("Model is on GPU!") # Check if we are on GPU
     
     ## Defining training helper variables
-    save_per_epoch, patience = 20, 50
+    save_per_epoch, patience = 5, 50
     patience_idx = patience
     best_val_loss = float('inf')
     #training_loss, val_loss = [], []
