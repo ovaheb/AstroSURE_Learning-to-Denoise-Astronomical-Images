@@ -225,7 +225,7 @@ def test(argv):
 
         if args.combine_patches:
             metrics_baseline, results_baseline = util.calculate_metrics(target=target, image=source, header=header, catalog=catalog, aorb=aorb, border=args.overlap, sigma_bkg=3,
-                                                                        skip_detection=False, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                        skip_detection=False, unsupervised=unsupervised, elliptical=args.elliptical, source=source)
             for metric_name, metric in zip(metrics_list, metrics_baseline):
                 metrics_total['Noisy'][metric_name].append(metric)
         else:
@@ -365,7 +365,7 @@ def test(argv):
                 if args.combine_patches:
                     denoised_source /= denoised_source_count
                     metrics_denoiser, results_denoiser = util.calculate_metrics(target=target, image=denoised_source, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                                 sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                                 sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, source=scaled_source)
 
                     for metric_name, metric in zip(metrics_list, metrics_denoiser):
                         metrics_total[denoiser.name][metric_name].append(metric)
@@ -504,7 +504,7 @@ def parse_args(argv):
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--poisson_settings', type=int, default=20)
     parser.add_argument('--gaussian_settings', type=int, default=50)
-    parser.add_argument('--sigma', type=int, default=3, help='Background sigma multiplier for object detection threshold')
+    parser.add_argument('--sigma', type=float, default=3, help='Background sigma multiplier for object detection threshold')
     parser.add_argument('--subtract_bkg', type=bool, default=False, help='Subtract background before inference')
     parser.add_argument('--overlap', type=int, default=64, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--combine_patches', type=bool, default=False, help='Combine patches before inference')

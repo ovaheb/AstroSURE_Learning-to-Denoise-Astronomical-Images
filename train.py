@@ -137,7 +137,7 @@ def train(argv):
     checkpoint_path = args.checkpoint_path + '/' + run_name
     if not os.path.exists(checkpoint_path):
         os.mkdir(checkpoint_path)
-    hf_path = prepare_dataset(args.data_path, force=True, method=args.inpainting_method, bias=args.bias)
+    hf_path = prepare_dataset(args.data_path, method=args.inpainting_method, bias=args.bias)
     hf = h5py.File(hf_path, 'r', swmr=True)
     
     ## Define the data path and train-test split
@@ -167,7 +167,7 @@ def train(argv):
             val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
             print(dataset_file_length)
         else:
-            raise Exception('Unsupervised training is only implemented for JWST and Keck datasets!')
+            raise Exception('Unsupervised training is only implemented for JWST, CFHT, and Keck data!')
     else:
         train_file_length = int(dataset_file_length * 0.8)
         random.seed(7)
@@ -238,7 +238,7 @@ def train(argv):
         print("Model is on GPU!") # Check if we are on GPU
     
     ## Defining training helper variables
-    save_per_epoch, patience = 5, 50
+    save_per_epoch, patience = 5, 30
     patience_idx = patience
     best_val_loss = float('inf')
     #training_loss, val_loss = [], []

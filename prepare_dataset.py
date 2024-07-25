@@ -44,7 +44,7 @@ def prepare_dataset(dataset_path, hf_root=os.environ.get('SLURM_TMPDIR'), force=
                             frame = np.float32(hdu.read())
                             headerA, headerB = dict(hdu.read_header()), dict(hdu.read_header())
                             header = headerA
-                            imgA, imgB = frame[30:-33, 32:1056], frame[30:-33, 1056:-32]
+                            imgA, imgB = frame[3:-33, 32:1056], frame[3:-33, 1056:-32]
                             imgA, imgB = util.remove_nan_CCD(imgA, method=method), util.remove_nan_CCD(imgB, method=method)
                             imgA, imgB = util.normalize_CCD_range(imgA, bias), util.normalize_CCD_range(imgB, bias)
                             readoutA, readoutB = header['RDNOISEA']/header['GAINA'], header['RDNOISEB']/header['GAINB']

@@ -603,11 +603,11 @@ def filter_objects(catalog, header, aorb, wcs):
     return filtered_catalog, (x1, y1)
 
 # Function to compute the different metrics
-def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, elliptical=False):
+def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, elliptical=False, source=None):
     bkg_image = sep.Background(image.squeeze().astype(np.float64))
     bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
     try:
-        objects = sep.extract(bkgsub_image, sigma_bkg, err=bkg_image.rms())
+        objects = sep.extract(bkgsub_image, sigma_bkg, err=sep.Background(source.squeeze().astype(np.float64)).rms())#bkg_image.rms())
     except:
         raise Exception('Error in object detection')
     objects = objects[np.maximum(objects['a'], objects['b']) < 100]
@@ -687,7 +687,7 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
     detection_results.close()
     catalog_results.close()
     matching_results.close()
-    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, false_alarms/detected_objs, all_objs, correct_detections/all_objs], results
+    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, 100.0*false_alarms/detected_objs, all_objs, 100.0*correct_detections/all_objs], results
 
 # Function to print the metrics
 def summarize_metrics(model_results, metrics_list, aggregate=False):
