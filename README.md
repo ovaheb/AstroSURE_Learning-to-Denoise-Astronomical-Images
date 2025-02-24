@@ -21,7 +21,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python train.py --config configs/your_config_file.yaml
+python train.py
 ```
 
 ## Datasets
