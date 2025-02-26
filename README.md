@@ -32,10 +32,6 @@ The following datasets are supported:
 - **Hubble Space Telescope**: Raw observational data.
 - **Canada-France-Hawaii Telescope**: Raw observational data.
 
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
 ## Acknowledgements
 
 We would like to thank the developers of Galsim, the Hubble Space Telescope, and the Canada-France-Hawaii Telescope for providing the data used in this project.
