@@ -26,7 +26,14 @@ from utils import utils_logger
 
 
 keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
-
+CFHT_val_files = ['/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617887p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617885p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1196452p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617873p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1196442p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1196448p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617825p.fits.fzA',
+'/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/995361p.fits.fzA']
 def test(argv):
     args = parse_args(argv)
     CFHT_flag = True if 'CFHT' in args.data_path else False
@@ -34,13 +41,16 @@ def test(argv):
     JWST_flag = True if 'JWST' in args.data_path else False
     visual_scaler = ZScaleInterval() if CFHT_flag else PercentileInterval(util.PERCENTILE)
     date = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-    result_path = args.result_path + '/' + args.data_path.split('/')[-1] + '_' + str(date) + '/'
+    random.seed(int(time.time()) + os.getpid())
+    run_identifier = str(random.randint(0, 100))
+    random.seed(None)
+    result_path = args.result_path + '/' + args.data_path.split('/')[-1] + '_' + str(date) + run_identifier + '/'
     if not os.path.exists(result_path):
         os.makedirs(result_path)
     utils_logger.logger_info(result_path, log_path=result_path + 'log.log')
     logger = logging.getLogger(result_path)
     date = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-    logger.info('Run Identifier: %s' %str(date))
+    logger.info('Run Identifier: %s' %str(date) + run_identifier)
     logger.info('Result are saved at %s'%result_path)
     logger.info(args)
     logger.info('All visualizations are done using %.1f%% percentile of images!' %util.PERCENTILE)
@@ -56,7 +66,7 @@ def test(argv):
         denoiser.to(device)
         denoisers.append(denoiser) ### Define ZSN2N denoiser
     
-    ### Define denoising models
+    # ### Define denoising models
     for idx_model, model_path in enumerate(args.model):
         # Extract model's parameters and settings from the directory name
         if model_path[0] == 'Baseline':
@@ -66,8 +76,7 @@ def test(argv):
             scaler = 'noscale'
             denoiser = UNetDenoiser(model_path[0], args.img_channel, device, None, scaler, None, None, 'Upsample Random', True, upsample_mode='bilinear')
         else:
-            if len(model_path[0].split('/')) == 1:
-                model_path[0] = '/home/ovaheb/scratch/temp/checkpoints/' + model_path[0]
+            model_path[0] = '/home/ovaheb/scratch/temp/checkpoints/' + model_path[0]
             if model_path[0].split('/')[-1].split('.')[-1] == 'pth':
                 complete_model_path = model_path[0]
                 configs = model_path[0].split('/')[-2].split('_')
@@ -94,11 +103,18 @@ def test(argv):
                 upsample_mode = 'bilinear' if architecture=='UNet-Upsample' else architecture[14:]
                 denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss + ' ' +
                                         str(idx_model + 1), disable_clipping, upsample_mode=upsample_mode)
+            elif architecture == 'UNet-Standard':
+                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Standard ' + setting + ' ' + train_loss + ' ' +
+                                        str(idx_model + 1), disable_clipping, standard=True)
             elif 'DnCNN' in architecture:
-                depth, model_patch_size = architecture.split('-')[1], architecture.split('-')[2]
+                depth, model_patch_size = int(architecture.split('-')[1]), int(architecture.split('-')[2])
                 denoiser = DnCNNDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
                                          str(idx_model + 1), disable_clipping, depth=depth, model_patch_size=model_patch_size)
                 args.combine_patches = True
+            elif architecture == 'Restormer':
+                raise ValueError('Architecture %s is not supported!'%architecture)
+                #denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss + ' ' +
+                #                        str(idx_model + 1), disable_clipping, upsample_mode=upsample_mode)
             else:
                 raise ValueError('Architecture %s is not supported!'%architecture)
         denoiser.to(device)
@@ -124,20 +140,21 @@ def test(argv):
             else:
                 image_list3.append(file_path)
     elif CFHT_flag:
-        img_list = [f"{item}A" for item in img_list] + [f"{item}B" for item in img_list]
-        train_file_length = int(len(img_list) * 0.8)
-        random.seed(7)
-        train_image_list = random.sample(img_list, train_file_length)
-        random.seed(None)
-        val_img_list = [file for file in img_list if file not in train_image_list]
+        # random.seed(7)
+        # img_list = random.sample(img_list, 20)
+        # img_list = [f"{item}A" for item in img_list] + [f"{item}B" for item in img_list]
+        # train_file_length = int(len(img_list) * 0.8)
+        # train_image_list = random.sample(img_list, train_file_length)
+        # random.seed(None)
+        # val_img_list = [file for file in img_list if file not in train_image_list]
         img_list = []
+        val_img_list = CFHT_val_files
         for img in val_img_list:
             base = img[:-1]
             suffix = img[-1]
-            for i in range(1, 41):
+            for i in range(1, 37):
                 img_list.append(f"{base}{i:02d}{suffix}")
-        catalog = Table.read('/arc/projects/mlao/ngvs_sorted.fits')
-
+        catalog = Table.read('/home/ovaheb/projects/def-sdraper/ovaheb/ngvs_sorted.fits')
     ################################## Inference ##################################
     rng = np.random.default_rng(int(hashlib.sha256(args.data_path.encode()).hexdigest(), 16) % 1000)  # Generate a unique number for each dataset same in different runs
     height, width, visual_counter = 0, 0, 0
@@ -182,22 +199,22 @@ def test(argv):
         elif CFHT_flag:
             hdu_number = int(img_name[-3:-1])
             img = np.float32(fits_file[hdu_number].data)
-            img = img[3:-33, 32:1056] if img_name[-1]=='A' else img[3:-33, 1056:-32]
+            aorb = img_name[-1]
+            img = img[3:-33, 32:1056] if aorb else img[3:-33, 1056:-32]
+            
             img = util.remove_nan_CCD(img, method='nearest')
             img = util.normalize_CCD_range(img, 0)
             header = fits_file[hdu_number].header
             unsupervised, is_table_hdu = True, False
-            skip_detection = True
             nobjs, exptime = 0, header['EXPTIME']
             source = np.expand_dims(img, axis=0)
             target = source + np.random.normal(0, 1, source.shape)
-            aorb = img_name[-1]
+            
         else:
             primary_hdu_idx = 0 if 'NOBJS' in fits_file[0].header else 1
             header = fits_file[primary_hdu_idx].header
             catalog = fits_file[-1].data
             unsupervised, is_table_hdu = False, True
-            skip_detection = True if args.noise_type in ['P', 'G', 'PG'] else False
             nobjs, exptime = header['NOBJS'], header['EXPTIME']
             target, _, _ = util.read_frame(fits_file, primary_hdu_idx)
             aorb = None
@@ -211,21 +228,20 @@ def test(argv):
         ### Extract patches
         if height != target.shape[0] or width != target.shape[1]:
             height, width = target.shape[:2]
-            width_list = list(np.arange(0, width, args.patch_size - args.overlap, dtype=np.int_))
-            height_list = list(np.arange(0, height, args.patch_size - args.overlap, dtype=np.int_))
+            window_size = args.patch_size - args.overlap
+            width_list = list(np.arange(0, width - window_size + 1, window_size, dtype=np.int_))
+            height_list = list(np.arange(0, height - window_size + 1, window_size, dtype=np.int_))
             tops, lefts = [], []
             for top in height_list:
-                top = (width - args.patch_size) if (top + args.patch_size) >= height else top
+                top = (height - args.patch_size) if (top + args.patch_size) >= height else top
                 tops.append(top)
             for left in width_list:
                 left = (width - args.patch_size) if (left + args.patch_size) >= width else left
                 lefts.append(left)
             patch_coordinates = [(top, left) for top in tops for left in lefts]
 
-
         if args.combine_patches:
-            metrics_baseline, results_baseline = util.calculate_metrics(target=target, image=source, header=header, catalog=catalog, aorb=aorb, border=args.overlap, sigma_bkg=3,
-                                                                        skip_detection=False, unsupervised=unsupervised, elliptical=args.elliptical, source=source)
+            metrics_baseline, results_baseline = util.calculate_metrics(target=target, image=source, header=header, catalog=catalog, aorb=aorb, border=args.overlap, sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical, source=source)
             for metric_name, metric in zip(metrics_list, metrics_baseline):
                 metrics_total['Noisy'][metric_name].append(metric)
         else:
@@ -233,7 +249,7 @@ def test(argv):
                 source_patch = source[top:top + args.patch_size, left:left + args.patch_size, :]
                 target_patch = target[top:top + args.patch_size, left:left + args.patch_size, :]
                 metrics_baseline, results_baseline = util.calculate_metrics(target=target_patch, image=source_patch, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                             sigma_bkg=3, skip_detection=True, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                             sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical)
                 for metric_name, metric in zip(metrics_list, metrics_baseline):
                     metrics_total['Noisy'][metric_name].append(metric)
 
@@ -282,10 +298,12 @@ def test(argv):
             for _, match in results_baseline.iterrows():
                 if not np.isnan(match['Separation']):
                     e = Ellipse(xy=(match['X_DET'], match['Y_DET']), width=match['MAJOR_DET']*6, height=match['MINOR_DET']*6, angle=match['ANGLE_DET'])
-                    e.set_edgecolor('green')
+                    e.set_edgecolor('blue')
                 elif np.isnan(match['RA_DET']):
+                    if CFHT_flag:
+                        continue
                     e = Ellipse(xy=(match['X_CAT'], match['Y_CAT']), width=match['MAJOR_CAT'], height=match['MINOR_CAT'], angle=match['ANGLE_CAT'])
-                    e.set_edgecolor('yellow')
+                    e.set_edgecolor('violet')
                 elif np.isnan(match['RA_CAT']):
                     e = Ellipse(xy=(match['X_DET'], match['Y_DET']), width=match['MAJOR_DET']*6, height=match['MINOR_DET']*6, angle=match['ANGLE_DET'])
                     e.set_edgecolor('red')
@@ -302,7 +320,7 @@ def test(argv):
             for _, match in results_baseline.iterrows():
                 if np.isnan(match['RA_DET']):
                     e = Ellipse(xy=(match['X_CAT'], match['Y_CAT']), width=match['MAJOR_CAT'], height=match['MINOR_CAT'], angle=match['ANGLE_CAT'])
-                    e.set_edgecolor('yellow')
+                    e.set_edgecolor('violet')
                     e.set_facecolor('none')
                     axs_obj[len(denoisers) + 1].add_artist(e)
             
@@ -332,10 +350,10 @@ def test(argv):
             
         
         ################# Inference #########################
-        batch_size = 128 if 'keck' not in args.data_path else 8
+        batch_size = 128 if not CFHT_flag else 32
         for idx_denoiser in range(len(denoisers)):
-            scaled_source, param1, param2 = util.scale(source, denoiser.scaler)
             denoiser = denoisers[idx_denoiser]
+            scaled_source, param1, param2 = util.scale(source, denoiser.scaler)
             denoised_source = np.zeros_like(scaled_source) if args.combine_patches else []
             denoised_source_count = np.zeros_like(scaled_source)
             if not isinstance(denoiser, (DnCNNDenoiser, BM3DDenoiser, ZSN2NDenoiser)):
@@ -347,9 +365,7 @@ def test(argv):
                     with torch.no_grad():
                         estimated = denoiser.denoise(scaled_source_patches.to(device, non_blocking=True))
                         estimated = util.descale(estimated, denoiser.scaler, param1, param2)
-                        if 'CFHT' in args.data_path:
-                            estimated = np.clip(estimated, 0.0, 65536.0)
-                        elif 'JWST' in args.data_path or 'keck' in args.data_path or denoiser.disable_clipping:
+                        if JWST_flag or keck_flag or denoiser.disable_clipping:
                             pass
                         else:
                             estimated = np.clip(estimated, 0.0, 65536.0)
@@ -361,6 +377,7 @@ def test(argv):
                         for idx_estimated in range(estimated.shape[0]):
                             denoised_source.append(estimated[idx_estimated, :, :, :])
                     start_idx += batch_size
+
 
                 if args.combine_patches:
                     denoised_source /= denoised_source_count
@@ -387,7 +404,7 @@ def test(argv):
                 with torch.no_grad():
                     estimated = denoiser.denoise(scaled_source.to(device, non_blocking=True))
                     estimated = util.descale(estimated, denoiser.scaler, param1, param2)
-                    if 'JWST' in args.data_path or 'keck' in args.data_path or denoiser.disable_clipping:
+                    if JWST_flag or keck_flag or denoiser.disable_clipping:
                         pass
                     else:
                         estimated = np.clip(estimated, 0.0, 65536.0)
@@ -414,10 +431,12 @@ def test(argv):
                 for _, match in results_denoiser.iterrows():
                     if not np.isnan(match['Separation']):
                         e = Ellipse(xy=(match['X_DET'], match['Y_DET']), width=match['MAJOR_DET']*6, height=match['MINOR_DET']*6, angle=match['ANGLE_DET'])
-                        e.set_edgecolor('green')
+                        e.set_edgecolor('blue')
                     elif np.isnan(match['RA_DET']):
+                        if CFHT_flag:
+                            continue
                         e = Ellipse(xy=(match['X_CAT'], match['Y_CAT']), width=match['MAJOR_CAT'], height=match['MINOR_CAT'], angle=match['ANGLE_CAT'])
-                        e.set_edgecolor('yellow')
+                        e.set_edgecolor('violet')
                     elif np.isnan(match['RA_CAT']):
                         e = Ellipse(xy=(match['X_DET'], match['Y_DET']), width=match['MAJOR_DET']*6, height=match['MINOR_DET']*6, angle=match['ANGLE_DET'])
                         e.set_edgecolor('red')
@@ -441,7 +460,7 @@ def test(argv):
                 if args.combine_patches:
                     if is_table_hdu:
                         fits_file.insert(len(fits_file) - 1, fits.ImageHDU(data=np.squeeze(denoised_source.astype(np.float32)), name=denoiser.name))
-                    elif 'JWST' in args.data_path:
+                    elif JWST_flag:
                         fits_file.append(fits.ImageHDU(data=np.squeeze(denoised_source.astype(np.float32)), name=denoiser.name))
                     else:
                         fits_file.append(fits.ImageHDU(data=np.squeeze(denoised_source.astype(np.float32)), name=denoiser.name))
@@ -504,7 +523,7 @@ def parse_args(argv):
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--poisson_settings', type=int, default=20)
     parser.add_argument('--gaussian_settings', type=int, default=50)
-    parser.add_argument('--sigma', type=float, default=3, help='Background sigma multiplier for object detection threshold')
+    parser.add_argument('--sigma', type=float, default=1.5, help='Background sigma multiplier for object detection threshold')
     parser.add_argument('--subtract_bkg', type=bool, default=False, help='Subtract background before inference')
     parser.add_argument('--overlap', type=int, default=64, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--combine_patches', type=bool, default=False, help='Combine patches before inference')

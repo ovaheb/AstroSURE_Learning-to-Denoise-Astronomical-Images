@@ -4,7 +4,7 @@ from scipy.ndimage import median_filter, uniform_filter, gaussian_filter
 from sklearn.preprocessing import StandardScaler
 from utils import utils_image as util
 from mask import Masker
-from unet_model import UNet, UNet_Upsample
+from unet_model import UNet, UNet_Upsample, UNet_Standard
 from dncnn_model import DnCNN as DnCNN
 import zsn2n as ZSN2N
 import bm3d
@@ -12,11 +12,13 @@ import bm3d
 ### Denoiser Classes ###
 
 class UNetDenoiser():
-    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, upsample_mode='bilinear'):
+    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, upsample_mode='bilinear', standard=False):
         self.img_channel = img_channel
         self.model_path = model_path
         self.name = 'UNet ' + name
-        if upsample_mode != None:
+        if standard:
+            self.model = UNet_Standard(in_channels=img_channel, out_channels=img_channel)
+        elif upsample_mode != None:
             self.model = UNet_Upsample(in_channels=img_channel, out_channels=img_channel, mode=upsample_mode)
         else:
             self.model = UNet(in_channels=img_channel, out_channels=img_channel)
@@ -62,7 +64,7 @@ class DnCNNDenoiser():
         self.disable_clipping = disable_clipping
         self.depth = depth
         self.model_patch_size = model_patch_size
-        self.model = DnCNN(in_nc=img_channel, out_nc=img_channel, nb=17)
+        self.model = DnCNN(in_nc=img_channel, out_nc=img_channel, nb=self.depth)
         self.load()
     
     def load(self):

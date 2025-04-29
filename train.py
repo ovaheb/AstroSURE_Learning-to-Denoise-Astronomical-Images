@@ -6,10 +6,10 @@ import h5py
 from utils import utils_image as util
 import torch
 import torch.nn as nn
-from torch.optim import Adam, lr_scheduler
+from torch.optim import Adam, AdamW, lr_scheduler
 import numpy as np
 import torchvision.transforms.functional as tvF
-from unet_model import UNet, UNet_Upsample
+from unet_model import UNet, UNet_Upsample, UNet_Standard
 from dncnn_model import DnCNN
 from restormer_model import Restormer
 import time
@@ -31,22 +31,27 @@ from pathlib import Path
 import json
 
 keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
+# restormer_epochs = [15, 27, 10, 7, 5, 4]
+# restormer_patch_sizes = [128, 160, 192, 256, 320, 384]
+# restoremer_batch_sizes = [64, 40, 32, 16, 8, 8]
 
 #@profile
 ### Main training script ###
 def train(argv):
     torch.backends.cudnn.benchmark = True
-    
     args = parse_args(argv)
+    CFHT_flag = True if 'CFHT' in args.data_path else False
+    keck_flag = True if 'keck' in args.data_path else False
+    JWST_flag = True if 'JWST' in args.data_path else False
     ### Specific training Poilicies for different SSL schemes
-    if args.data_path.split("/")[-1]=='JWST':
+    if JWST_flag:
         unsupervised = True 
         if args.supervised=='N2C':
             args.supervised = 'N2N'
         args.noise_type = 'None'
         args.disable_early_stopping = True
         args.disable_clipping = True
-    elif 'keck' in args.data_path or 'CFHT' in args.data_path:
+    elif keck_flag or CFHT_flag:
         unsupervised = True
         if args.supervised=='N2C':
             args.supervised = 'N2N'
@@ -139,33 +144,33 @@ def train(argv):
         os.mkdir(checkpoint_path)
     hf_path = prepare_dataset(args.data_path, method=args.inpainting_method, bias=args.bias)
     hf = h5py.File(hf_path, 'r', swmr=True)
-    
     ## Define the data path and train-test split
     file_list = [str(file) for file in Path(args.data_path).rglob('*') if (util.is_image_file(str(file)) or util.is_fits_file(str(file)))]
     dataset_file_length = len(file_list)
     if unsupervised:
-        if 'JWST' in args.data_path:
+        if JWST_flag:
             train_image_list = [file for file in file_list if json.loads(hf[file].attrs['Header'])['RA_V1']<=52.9642]
             val_image_list = [file for file in file_list if file not in train_image_list]
             train_file_length = len(train_image_list)
             train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
             val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
-        elif 'keck' in args.data_path:
+        elif keck_flag:
             val_image_list = [file for file in file_list if file.split('/')[-1].split('.')[1] in keck_val_files]
             train_image_list = [file for file in file_list if file not in val_image_list]
             train_dataset = TrainingDatasetKeck(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel)
             val_dataset = TestingDatasetKeck(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel)
-        elif 'CFHT' in args.data_path:
+        elif CFHT_flag:
+            random.seed(7)
+            file_list = random.sample(file_list, 20)
+            file_list = [f"{item}{i:02d}" for item in file_list for i in range(1, 37)]
             file_list = [f"{item}A" for item in file_list] + [f"{item}B" for item in file_list]
             dataset_file_length = len(file_list)
             train_file_length = int(dataset_file_length * 0.8)
-            random.seed(7)
             train_image_list = random.sample(file_list, train_file_length)
             random.seed(None)
             val_image_list = [file for file in file_list if file not in train_image_list]
             train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
             val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
-            print(dataset_file_length)
         else:
             raise Exception('Unsupervised training is only implemented for JWST, CFHT, and Keck data!')
     else:
@@ -192,6 +197,8 @@ def train(argv):
         model = UNet_Upsample(in_channels=args.img_channel, out_channels=args.img_channel, mode=args.upsample_mode, load_from=load_from)
     elif args.architecture == 'DnCNN':
         model = DnCNN(in_nc=args.img_channel, out_nc=args.img_channel, nb=args.dncnn_depth)
+    elif args.architecture == 'UNet-Standard':
+        model = UNet_Standard(in_channels=args.img_channel, out_channels=args.img_channel, load_from=load_from)
     elif args.architecture == 'Restormer':
         model = Restormer()
     else:
@@ -219,7 +226,10 @@ def train(argv):
         elif args.loss == 'L2-L1Prior':
             criterion = util.CustomLoss(loss_weight=loss_weight, prior_weight=prior_weight, loss=nn.MSELoss())
 
-    if args.supervised=='EI':
+    if args.architecture == 'Restormer':
+        optimizer = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-4, amsgrad=False)
+        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', threshold_mode='rel', threshold=0.001, factor=0.5, patience=20, min_lr=1e-6)
+    elif args.supervised=='EI':
         optimizer = Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-8, amsgrad=False)
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', threshold_mode='rel', threshold=0.001, factor=0.5, patience=100)
     elif args.fix_learning_rate:
@@ -247,12 +257,13 @@ def train(argv):
     
     if args.natural:
         min_pixel, max_pixel = 0.0, 256.0
-    elif 'JWST' in args.data_path:
+    elif JWST_flag:
         min_pixel, max_pixel = -20.0, 238.0
-    elif 'keck' in args.data_path:
+    elif keck_flag:
         min_pixel, max_pixel = -627001326.0, 2114812364.0
     else:
         min_pixel, max_pixel = 0.0, 65536.0
+
     ## Trainng loop
     print("Starting Training ...")
     epoch_best_model = -1
@@ -528,7 +539,7 @@ def initialize_wandb(args, run_name, date):
 ## Parse arguments to train images with different settings and parameters
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog='training', add_help=True)
-    parser.add_argument('--data_path', type=str, default='/home/ovaheb/projects/def-sdraper/ovaheb/simulated_data/trainsets/medium_radius')
+    parser.add_argument('--data_path', type=str, default='/home/ovaheb/projects/def-sdraper/ovaheb/simulated_data/trainsets/large_radius')
     parser.add_argument('--checkpoint_path', type=str, default='/home/ovaheb/scratch/temp/checkpoints')
     parser.add_argument('--natural', type=bool, default=False)
     parser.add_argument('--img_channel', type=int, default=1)
@@ -536,7 +547,7 @@ def parse_args(argv):
     parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--patch_size', type=int, default=256)
-    parser.add_argument('--architecture', type=str, default='UNet-Upsample', help='UNet/UNet-Upsample/DnCNN/Restormer')
+    parser.add_argument('--architecture', type=str, default='UNet-Upsample', help='UNet/UNet-Upsample/UNet-Standard/DnCNN/Restormer')
     parser.add_argument('--upsample_mode', type=str, default='bilinear', help='nearest/bilinear/bicubic')
     parser.add_argument('--loss', type=str, default='L2', help='L2/L1/L2_L1Prior/L1_L1Prior')
     parser.add_argument('--scale', type=str, default='noscale', help='noscale/norm/standard/division/arcsinh')

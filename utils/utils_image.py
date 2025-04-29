@@ -36,10 +36,13 @@ from tabulate import tabulate
 import statistics
 import re
 import warnings
+from astropy.wcs import FITSFixedWarning
 
 sep.set_extract_pixstack(30000000)
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', message="RADECSYS= 'FK5 ' / Coordinate system for equinox (FK4/FK5/GAPPT)", category=FITSFixedWarning, append=True)
+warnings.filterwarnings('ignore', message="Invalid parameter values: MJD-OBS and DATE-OBS are inconsistent", category=FITSFixedWarning, append=True)
 
 ## Variables
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -432,7 +435,6 @@ def add_noise_galsim(img, rng, header, subtract_bkg=False, idx_noisy=0):
     noisy_realization.addNoise(read_noise)
     if subtract_bkg:
         noisy_realization -= sky_image
-    ### Gain and quantization
     noisy_realization /= roman.gain
     noisy_realization.quantize()
     return np.expand_dims(noisy_realization.array, axis=0)
@@ -542,9 +544,7 @@ def inverse_generalized_anscombe(x, mu, sigma, gain=1.0):
     exact_inverse[np.where(exact_inverse != exact_inverse)] = 0.0
     return exact_inverse
 
-def uMSE(image, target):
-    #source_b, source_c = extract_neighbors(source)
-    return np.mean((image - target) ** 2) #- np.mean((source_b - source_c) ** 2) / 2
+
 
 # Function to compute euclidean distance of two pixels
 def calculate_distance(coord1, coord2):
@@ -578,10 +578,9 @@ def is_inside_polygon(polygon, ra, dec):
 
 def filter_objects(catalog, header, aorb, wcs):
     if aorb == 'A':
-        x2, x1, y2, y1 = [int(element) for element in re.split(r'[\[\],:]', header['DETSECA'])[1:-1]]
+        x1, x2, y1, y2 = 32, 1055, 3, 4610
     elif aorb == 'B':
-        x1, x2, y2, y1 = [int(element) for element in re.split(r'[\[\],:]', header['DETSECB'])[1:-1]]
-    y1, y2 = y1 + 2, y2 - 2
+        x1, x2, y1, y2 = 1056, 2080, 3, 4610
     ra1, dec1 = wcs.wcs_pix2world(x1, y1, 0)
     ra2, dec2 = wcs.wcs_pix2world(x2, y1, 0)
     ra3, dec3 = wcs.wcs_pix2world(x2, y2, 0)
@@ -600,16 +599,23 @@ def filter_objects(catalog, header, aorb, wcs):
     filtered_catalog['MAJOR'] = filtered_catalog['R_MAG_AUTO']
     filtered_catalog['MINOR'] = filtered_catalog['R_MAG_AUTO']
     filtered_catalog['ANGLE'] = filtered_catalog['R_MAG_AUTO']
-    return filtered_catalog, (x1, y1)
+    return filtered_catalog
+
+
+def uMSE(image, target):
+    image_d = image[1::2, 1::2].flatten()
+    target_a, target_b, target_c = target[::2, ::2].flatten(), target[1::2, ::2].flatten(), target[::2, 1::2].flatten()
+    return np.mean((image_d - target_a) ** 2) - np.mean((target_b - target_c) ** 2) / 2
 
 # Function to compute the different metrics
-def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, skip_detection=False, unsupervised=False, elliptical=False, source=None):
+def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, unsupervised=False, elliptical=False, source=None):
     bkg_image = sep.Background(image.squeeze().astype(np.float64))
     bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
     try:
         objects = sep.extract(bkgsub_image, sigma_bkg, err=sep.Background(source.squeeze().astype(np.float64)).rms())#bkg_image.rms())
     except:
-        raise Exception('Error in object detection')
+        objects = np.empty(0, dtype=[('x', float), ('y', float), ('a', float), ('b', float), ('theta', float)])
+
     objects = objects[np.maximum(objects['a'], objects['b']) < 100]
     devnull = open(os.devnull, 'w')
     detection_results = tempfile.NamedTemporaryFile(suffix='.fits')
@@ -660,7 +666,7 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
                             'values2=' + 'X Y', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
         
     if unsupervised:
-        mse = uMSE(image, target)
+        mse = uMSE(image.squeeze(), target.squeeze())
     else:
         mse = np.mean((target - image)**2)
     mae = np.mean(np.abs(target - image))
@@ -682,22 +688,21 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
     detected_objs = results['RA_DET'].notnull().sum()
     all_objs = results['RA_CAT'].notnull().sum()
     correct_detections = results['Separation'].notnull().sum()
-    missed = results['RA_DET'].isnull().sum()
-    false_alarms = results['RA_CAT'].isnull().sum()
+    #missed = results['RA_DET'].isnull().sum()
+    false_alarm_rate = 100.0*results['RA_CAT'].isnull().sum()/detected_objs if detected_objs > 0 else 100
     detection_results.close()
     catalog_results.close()
     matching_results.close()
-    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, 100.0*false_alarms/detected_objs, all_objs, 100.0*correct_detections/all_objs], results
+    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, false_alarm_rate, all_objs, 100.0*correct_detections/all_objs], results
 
 # Function to print the metrics
 def summarize_metrics(model_results, metrics_list, aggregate=False):
-    model_names = list(model_results.keys())
     headers = ['Model'] + metrics_list
     if aggregate:
-        table_data = [[model] + [statistics.mean(metrics[model_name]) for model_name in metrics_list] for model, metrics in model_results.items()]
+        table_data = [[model] + [np.mean(metrics[metric_name]) for metric_name in metrics_list] for model, metrics in model_results.items()]
         return '\n' + tabulate(table_data, headers, tablefmt='fancy_grid')
     else:
-        table_data = [[model] + [metrics[metric][-1] for metric in metrics_list] for model, metrics in model_results.items()]
+        table_data = [[model] + [metrics[metric_name][-1] for metric_name in metrics_list] for model, metrics in model_results.items()]
         return '\n' + tabulate(table_data, headers)
 
 

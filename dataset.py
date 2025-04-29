@@ -49,7 +49,7 @@ class TrainingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4581, 1024)
+        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4608, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings
@@ -72,7 +72,7 @@ class TrainingDataset(Dataset):
         self.clean_image, _, _ = util.read_frame(hf_frame=self.clean_image, scale_mode=scale_mode, noise_type='None', header=header)
         if self.clean_image.shape[0] != 1:
             random_index = random.choice([0, 1])
-            self.clean_image = self.clean_image[random_index:random_index+1, :, :]
+            self.clean_image = self.clean_image[random_index:random_index + 1, :, :]
 
         if 'JWST' in self.data_path:
             other_index = 1 - random_index
@@ -143,7 +143,7 @@ class TestingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4581, 1024)
+        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4608, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings

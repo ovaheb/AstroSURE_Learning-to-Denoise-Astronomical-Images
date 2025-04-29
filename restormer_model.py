@@ -86,7 +86,7 @@ class Restormer(nn.Module):
                  expansion_factor=2.66):
         super(Restormer, self).__init__()
 
-        self.embed_conv = nn.Conv2d(3, channels[0], kernel_size=3, padding=1, bias=False)
+        self.embed_conv = nn.Conv2d(1, channels[0], kernel_size=3, padding=1, bias=False)
 
         self.encoders = nn.ModuleList([nn.Sequential(*[TransformerBlock(
             num_ch, num_ah, expansion_factor) for _ in range(num_tb)]) for num_tb, num_ah, num_ch in
@@ -108,7 +108,7 @@ class Restormer(nn.Module):
 
         self.refinement = nn.Sequential(*[TransformerBlock(channels[1], num_heads[0], expansion_factor)
                                           for _ in range(num_refinement)])
-        self.output = nn.Conv2d(channels[1], 3, kernel_size=3, padding=1, bias=False)
+        self.output = nn.Conv2d(channels[1], 1, kernel_size=3, padding=1, bias=False)
 
     def forward(self, x):
         fo = self.embed_conv(x)
