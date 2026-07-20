@@ -1,7 +1,6 @@
 import os
 import subprocess
 import tempfile
-import sys
 import math
 import random
 import numpy as np
@@ -10,7 +9,6 @@ import torch
 import cv2
 import sep
 from torchvision.utils import make_grid
-from datetime import datetime
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from astropy.io import fits
@@ -33,8 +31,6 @@ import torchvision.transforms.functional as tvF
 from datetime import date
 from sklearn.preprocessing import StandardScaler
 from tabulate import tabulate
-import statistics
-import re
 import warnings
 from astropy.wcs import FITSFixedWarning
 
@@ -608,11 +604,11 @@ def uMSE(image, target):
     return np.mean((image_d - target_a) ** 2) - np.mean((target_b - target_c) ** 2) / 2
 
 # Function to compute the different metrics
-def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, unsupervised=False, elliptical=False, source=None):
+def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, unsupervised=False, elliptical=False, source=None, HST_flag=False, fobj=None):
     bkg_image = sep.Background(image.squeeze().astype(np.float64))
     bkgsub_image = image.squeeze().astype(np.float64) - bkg_image
     try:
-        objects = sep.extract(bkgsub_image, sigma_bkg, err=sep.Background(source.squeeze().astype(np.float64)).rms())#bkg_image.rms())
+        objects = sep.extract(bkgsub_image, sigma_bkg, err=sep.Background(source.squeeze().astype(np.float64)).rms()) #bkg_image.rms())
     except:
         objects = np.empty(0, dtype=[('x', float), ('y', float), ('a', float), ('b', float), ('theta', float)])
 
@@ -622,23 +618,44 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
     catalog_results = tempfile.NamedTemporaryFile(suffix='.fits')
     matching_results = tempfile.NamedTemporaryFile(suffix='.fits')
     if unsupervised:
-        pixel_scale = (header['PIXSCAL1'] + header['PIXSCAL2']) / 2
-        wcs = WCS(header)
+        if HST_flag:
+            pixel_scale = 0.049 #arcsec/pixel
+            catalog_table = catalog.copy()
+
+            catalog_table['X'] = catalog_table['X_IMAGE']
+            catalog_table['Y'] = catalog_table['Y_IMAGE']
+            catalog_table['RA'] = catalog_table['ALPHA_J2000']
+            catalog_table['DEC'] = catalog_table['DELTA_J2000']
+            catalog_table['MAJOR'] = catalog_table['ELLIPTICITY']
+            catalog_table['MINOR'] = catalog_table['ELLIPTICITY']
+            catalog_table['ANGLE'] = catalog_table['THETA_IMAGE']
+            catalog_table.write(catalog_results.name, overwrite=True) #('X', 'Y', 'RA', 'DEC', 'ANGLE', ...)
+            wcs = WCS(header, fobj=fobj, key=' ')
+            ra, dec = wcs.all_pix2world(objects['x'], objects['y'], 0)
+            detection_table = Table([objects['x'], objects['y'], ra, dec, objects['a'], objects['b'], np.degrees(objects['theta'])], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE'))
+            detection_table.write(detection_results.name, overwrite=True)
+            process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=sky', 'params=1', 'values1=RA DEC', 
+                                        'values2=RA DEC', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
         
-        catalog_table = filter_objects(catalog, header, aorb, wcs)
-        catalog_table.write(catalog_results.name, overwrite=True) #('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE', 'R_MAG_AUTO')
         
-        if aorb == 'A':
-            ra, dec = wcs.wcs_pix2world(objects['x'] + 32, objects['y'] + 3, 0)
-        elif aorb == 'B':
-            ra, dec = wcs.wcs_pix2world(objects['x'] + 1056, objects['y'] + 3, 0)
         else:
-            raise ValueError('Unknown amplifier!')
-        detection_table = Table([objects['x'], objects['y'], ra, dec, objects['a'], objects['b'], np.degrees(objects['theta'])], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE'))
-        detection_table.write(detection_results.name, overwrite=True)
-        
-        process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=sky', 'params=1', 'values1=RA DEC', 
-                                    'values2=RA DEC', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
+            pixel_scale = (header['PIXSCAL1'] + header['PIXSCAL2']) / 2
+            wcs = WCS(header)
+            
+            catalog_table = filter_objects(catalog, header, aorb, wcs)
+            catalog_table.write(catalog_results.name, overwrite=True) #('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE', 'R_MAG_AUTO')
+            
+            if aorb == 'A':
+                ra, dec = wcs.wcs_pix2world(objects['x'] + 32, objects['y'] + 3, 0)
+            elif aorb == 'B':
+                ra, dec = wcs.wcs_pix2world(objects['x'] + 1056, objects['y'] + 3, 0)
+            else:
+                raise ValueError('Unknown amplifier!')
+            detection_table = Table([objects['x'], objects['y'], ra, dec, objects['a'], objects['b'], np.degrees(objects['theta'])], names=('X', 'Y', 'RA', 'DEC', 'MAJOR', 'MINOR', 'ANGLE'))
+            detection_table.write(detection_results.name, overwrite=True)
+            
+            process = subprocess.Popen(['/home/ovaheb/code/topcat/stilts', 'tmatch2', 'in1=' + detection_results.name, 'in2=' + catalog_results.name, 'matcher=sky', 'params=1', 'values1=RA DEC', 
+                                        'values2=RA DEC', 'find=best', 'join=1or2', 'progress=none', 'omode=out', 'out=' + matching_results.name, 'suffix1=_DET', 'suffix2=_CAT'], stderr=devnull)
         
     else:
         wcs = WCS(naxis=2)
@@ -676,7 +693,7 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
     ssim = calculate_ssim(target.squeeze(), image.squeeze(), max_pixel=max_pixel)
     kl = kl_divergence(target.ravel(), image.ravel())
     niqe_metric = skvideo.measure.niqe(image)
-    _ = process.communicate()
+    _  = process.communicate()
     with fits.open(matching_results.name) as matching_results_fits:
         results = matching_results_fits[1].data
         results = pd.DataFrame(results)

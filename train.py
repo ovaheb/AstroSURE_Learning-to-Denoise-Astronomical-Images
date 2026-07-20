@@ -30,7 +30,10 @@ import datetime
 from pathlib import Path
 import json
 
-keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
+os.environ["WANDB__SERVICE_WAIT"] = "300"
+os.environ["WANDB_START_METHOD"] = "thread"
+
+# keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
 # restormer_epochs = [15, 27, 10, 7, 5, 4]
 # restormer_patch_sizes = [128, 160, 192, 256, 320, 384]
 # restoremer_batch_sizes = [64, 40, 32, 16, 8, 8]
@@ -43,9 +46,17 @@ def train(argv):
     CFHT_flag = True if 'CFHT' in args.data_path else False
     keck_flag = True if 'keck' in args.data_path else False
     JWST_flag = True if 'JWST' in args.data_path else False
+    HST_flag = True if 'HST' in args.data_path else False
     ### Specific training Poilicies for different SSL schemes
     if JWST_flag:
-        unsupervised = True 
+        unsupervised = True
+        if args.supervised=='N2C':
+            args.supervised = 'N2N'
+        args.noise_type = 'None'
+        args.disable_early_stopping = True
+        args.disable_clipping = True
+    elif HST_flag:
+        unsupervised = True
         if args.supervised=='N2C':
             args.supervised = 'N2N'
         args.noise_type = 'None'
@@ -154,6 +165,16 @@ def train(argv):
             train_file_length = len(train_image_list)
             train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
             val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+        elif HST_flag:
+            random.seed(7)
+            file_list = random.sample(file_list, 10)
+            dataset_file_length = len(file_list)
+            train_file_length = int(dataset_file_length * 0.8)
+            train_image_list = random.sample(file_list, train_file_length)
+            random.seed(None)
+            val_image_list = [file for file in file_list if file not in train_image_list]
+            train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
+            val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
         elif keck_flag:
             val_image_list = [file for file in file_list if file.split('/')[-1].split('.')[1] in keck_val_files]
             train_image_list = [file for file in file_list if file not in val_image_list]
@@ -172,7 +193,7 @@ def train(argv):
             train_dataset = TrainingDataset(hf, args.data_path, train_image_list, args.patch_size, args.supervised, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
             val_dataset = TestingDataset(hf, args.data_path, val_image_list, args.patch_size, args.scale, args.img_channel, args.noise_type, args.poisson_settings, args.gaussian_settings, args.exptime_division, args.natural, args.subtract_bkg)
         else:
-            raise Exception('Unsupervised training is only implemented for JWST, CFHT, and Keck data!')
+            raise Exception('Unsupervised training is only implemented for HST, JWST, CFHT, and Keck data!')
     else:
         train_file_length = int(dataset_file_length * 0.8)
         random.seed(7)
@@ -259,6 +280,8 @@ def train(argv):
         min_pixel, max_pixel = 0.0, 256.0
     elif JWST_flag:
         min_pixel, max_pixel = -20.0, 238.0
+    elif HST_flag:
+        min_pixel, max_pixel = 0.0, 65536.0
     elif keck_flag:
         min_pixel, max_pixel = -627001326.0, 2114812364.0
     else:
@@ -534,7 +557,7 @@ def initialize_wandb(args, run_name, date):
                     "Fix Learning Rate": args.fix_learning_rate,
                     "Bias": args.bias,
                     "Inpainting Method": args.inpainting_method,
-                    "Pretrained weights loaded from": args.load_from}, mode=args.wandb_mode,)
+                    "Pretrained weights loaded from": args.load_from}, mode=args.wandb_mode, settings=wandb.Settings(start_method="thread", init_timeout=120))
     
 ## Parse arguments to train images with different settings and parameters
 def parse_args(argv):

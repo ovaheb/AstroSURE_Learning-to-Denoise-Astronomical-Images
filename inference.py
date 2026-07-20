@@ -16,16 +16,17 @@ import sep
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Ellipse
-from astropy.visualization import PercentileInterval, ZScaleInterval, MinMaxInterval
+from astropy.visualization import PercentileInterval, ZScaleInterval
 from astropy.table import Table
 import torch
 from denoisers import BaselineDenoiser, UNetDenoiser, DnCNNDenoiser, FilterDenoiser, BM3DDenoiser, ZSN2NDenoiser
 from utils import utils_image as util
 from utils import utils_logger
-#from skimage.restoration import estimate_sigma
 
+from astropy.wcs import WCS
 
-keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
+keck_val_files = ['n0114', 'n0123', 'n0135', 'n0155', 'n0161', 'n0190', 
+                  'n0200', 'n0212', 'n0247', 'n0251', 'n0271', 'n0273']
 CFHT_val_files = ['/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617887p.fits.fzA',
 '/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1617885p.fits.fzA',
 '/home/ovaheb/projects/def-sdraper/ovaheb/CFHT/1196452p.fits.fzA',
@@ -39,6 +40,7 @@ def test(argv):
     CFHT_flag = True if 'CFHT' in args.data_path else False
     keck_flag = True if 'keck' in args.data_path else False
     JWST_flag = True if 'JWST' in args.data_path else False
+    HST_flag = True if 'HST' in args.data_path else False
     visual_scaler = ZScaleInterval() if CFHT_flag else PercentileInterval(util.PERCENTILE)
     date = datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
     random.seed(int(time.time()) + os.getpid())
@@ -155,6 +157,16 @@ def test(argv):
             for i in range(1, 37):
                 img_list.append(f"{base}{i:02d}{suffix}")
         catalog = Table.read('/home/ovaheb/projects/def-sdraper/ovaheb/ngvs_sorted.fits')
+    elif HST_flag:
+        file_list = [str(file) for file in Path('/home/ovaheb/projects/def-sdraper/ovaheb/HST').rglob('*') if (util.is_image_file(str(file)) or util.is_fits_file(str(file)))]
+        all_files = file_list.copy()
+        random.seed(7)
+        train_files = random.sample(file_list, 10)
+        unseen_files = [f for f in all_files if f not in train_files]
+        random.seed(42)
+        img_list = random.sample(unseen_files, 5)
+        catalog = Table.read('/home/ovaheb/projects/def-sdraper/ovaheb/udf-i.fits')
+    
     ################################## Inference ##################################
     rng = np.random.default_rng(int(hashlib.sha256(args.data_path.encode()).hexdigest(), 16) % 1000)  # Generate a unique number for each dataset same in different runs
     height, width, visual_counter = 0, 0, 0
@@ -201,7 +213,6 @@ def test(argv):
             img = np.float32(fits_file[hdu_number].data)
             aorb = img_name[-1]
             img = img[3:-33, 32:1056] if aorb else img[3:-33, 1056:-32]
-            
             img = util.remove_nan_CCD(img, method='nearest')
             img = util.normalize_CCD_range(img, 0)
             header = fits_file[hdu_number].header
@@ -209,7 +220,15 @@ def test(argv):
             nobjs, exptime = 0, header['EXPTIME']
             source = np.expand_dims(img, axis=0)
             target = source + np.random.normal(0, 1, source.shape)
-            
+        elif HST_flag:
+            img = np.float32(fits_file[1].data)
+            img = util.remove_nan_CCD(img, method='nearest')
+            header = fits_file[1].header
+            unsupervised, is_table_hdu = True, False
+            nobjs, exptime = 0, fits_file[0].header['EXPTIME']
+            source = np.expand_dims(img, axis=0)
+            target = source + np.random.normal(0, 1, source.shape)
+            aorb = None
         else:
             primary_hdu_idx = 0 if 'NOBJS' in fits_file[0].header else 1
             header = fits_file[primary_hdu_idx].header
@@ -229,8 +248,8 @@ def test(argv):
         if height != target.shape[0] or width != target.shape[1]:
             height, width = target.shape[:2]
             window_size = args.patch_size - args.overlap
-            width_list = list(np.arange(0, width - window_size + 1, window_size, dtype=np.int_))
-            height_list = list(np.arange(0, height - window_size + 1, window_size, dtype=np.int_))
+            width_list = list(np.arange(0, width - window_size + 1 + args.overlap, window_size, dtype=np.int_))
+            height_list = list(np.arange(0, height - window_size + 1 + args.overlap, window_size, dtype=np.int_))
             tops, lefts = [], []
             for top in height_list:
                 top = (height - args.patch_size) if (top + args.patch_size) >= height else top
@@ -239,9 +258,8 @@ def test(argv):
                 left = (width - args.patch_size) if (left + args.patch_size) >= width else left
                 lefts.append(left)
             patch_coordinates = [(top, left) for top in tops for left in lefts]
-
         if args.combine_patches:
-            metrics_baseline, results_baseline = util.calculate_metrics(target=target, image=source, header=header, catalog=catalog, aorb=aorb, border=args.overlap, sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical, source=source)
+            metrics_baseline, results_baseline = util.calculate_metrics(target=target, image=source, header=header, catalog=catalog, aorb=aorb, border=args.overlap, sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical, source=source, HST_flag=HST_flag, fobj=fits_file)
             for metric_name, metric in zip(metrics_list, metrics_baseline):
                 metrics_total['Noisy'][metric_name].append(metric)
         else:
@@ -249,10 +267,9 @@ def test(argv):
                 source_patch = source[top:top + args.patch_size, left:left + args.patch_size, :]
                 target_patch = target[top:top + args.patch_size, left:left + args.patch_size, :]
                 metrics_baseline, results_baseline = util.calculate_metrics(target=target_patch, image=source_patch, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                             sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                             sigma_bkg=3, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag)
                 for metric_name, metric in zip(metrics_list, metrics_baseline):
                     metrics_total['Noisy'][metric_name].append(metric)
-
         ############## Initialize plots for visualization #################
         if args.visualize and visual_counter < util.MAX_NUM_TO_VISUALIZE:
             ### Initialize parameters  for visualization
@@ -337,10 +354,18 @@ def test(argv):
             num_rows2 = int((num_subplots2 - 1) / 3) + 1
             fig_err, axs_err = plt.subplots(num_rows2, num_cols, figsize=(util.PLOT_SIZE*num_cols, util.PLOT_SIZE*num_rows2))
             axs_err = axs_err.flatten()
-            image_obj3 = axs_err[0].imshow(np.abs(source_to_visualize - target_to_visualize), interpolation='nearest', cmap='gray_r', norm=norm)
+            ### these should be deleted
+            _, err_vmax = visual_scaler.get_limits(np.abs(source_to_visualize - target_to_visualize))
+            if err_vmax <= 0:
+                err_vmax = 1e-5
+            image_obj3 = axs_err[0].imshow(source_to_visualize - target_to_visualize, interpolation='nearest', cmap='RdBu_r', vmin=-err_vmax, vmax=err_vmax)
+
             axs_err[0].set_title('Noisy; MAE=%.3f'%(metrics_total['Noisy']['MAE'][-1]))
-            cmap3, _ = image_obj3.get_cmap(), plt.colorbar(image_obj3, ax=axs_err[0], fraction=0.046, pad=0.04)
+            cmap3, _ = image_obj3.get_cmap(), plt.colorbar(image_obj3, ax=axs_err[0], fraction=0.046, pad=0.04, ticks=[-err_vmax, 0, err_vmax])
             
+            # image_obj3 = axs_err[0].imshow(np.abs(source_to_visualize - target_to_visualize), interpolation='nearest', cmap='gray_r', norm=norm)
+            # cmap3, _ = image_obj3.get_cmap(), plt.colorbar(image_obj3, ax=axs_err[0], fraction=0.046, pad=0.04)
+
             ### Plot Residuals
             fig_res, axs_res = plt.subplots(num_rows2, num_cols, figsize=(util.PLOT_SIZE*num_cols, util.PLOT_SIZE*num_rows2))
             axs_res = axs_res.flatten()
@@ -350,7 +375,7 @@ def test(argv):
             
         
         ################# Inference #########################
-        batch_size = 128 if not CFHT_flag else 32
+        batch_size = 128 if not (CFHT_flag or HST_flag) else 32
         for idx_denoiser in range(len(denoisers)):
             denoiser = denoisers[idx_denoiser]
             scaled_source, param1, param2 = util.scale(source, denoiser.scaler)
@@ -365,7 +390,7 @@ def test(argv):
                     with torch.no_grad():
                         estimated = denoiser.denoise(scaled_source_patches.to(device, non_blocking=True))
                         estimated = util.descale(estimated, denoiser.scaler, param1, param2)
-                        if JWST_flag or keck_flag or denoiser.disable_clipping:
+                        if JWST_flag or keck_flag or HST_flag or denoiser.disable_clipping:
                             pass
                         else:
                             estimated = np.clip(estimated, 0.0, 65536.0)
@@ -382,7 +407,7 @@ def test(argv):
                 if args.combine_patches:
                     denoised_source /= denoised_source_count
                     metrics_denoiser, results_denoiser = util.calculate_metrics(target=target, image=denoised_source, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                                 sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, source=scaled_source)
+                                                                                 sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, source=scaled_source, HST_flag=HST_flag, fobj=fits_file)
 
                     for metric_name, metric in zip(metrics_list, metrics_denoiser):
                         metrics_total[denoiser.name][metric_name].append(metric)
@@ -394,7 +419,7 @@ def test(argv):
                         denoised_source_patch = denoised_source[idx_estimated]
 
                         metrics_denoiser, results_denoiser = util.calculate_metrics(target=target_patch, image=denoised_source_patch, header=header, catalog=catalog, aorb=aorb, 
-                                                                                    border=args.overlap, sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                                    border=args.overlap, sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag, fobj=fits_file)
                         for metric_name, metric in zip(metrics_list, metrics_denoiser):
                             metrics_total[denoiser.name][metric_name].append(metric)
                     denoised_source_to_visualize = denoised_source_patch
@@ -404,14 +429,14 @@ def test(argv):
                 with torch.no_grad():
                     estimated = denoiser.denoise(scaled_source.to(device, non_blocking=True))
                     estimated = util.descale(estimated, denoiser.scaler, param1, param2)
-                    if JWST_flag or keck_flag or denoiser.disable_clipping:
+                    if JWST_flag or keck_flag or HST_flag or denoiser.disable_clipping:
                         pass
                     else:
                         estimated = np.clip(estimated, 0.0, 65536.0)
 
                     denoised_source = estimated
                     metrics_denoiser, results_denoiser = util.calculate_metrics(target=target, image=denoised_source, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                     sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical)
+                                                                     sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag, fobj=fits_file)
                     for metric_name, metric in zip(metrics_list, metrics_denoiser):
                         metrics_total[denoiser.name][metric_name].append(metric)
                     denoised_source_to_visualize = denoised_source
@@ -450,7 +475,8 @@ def test(argv):
                 axs_dist[idx_image].set_title('%s; KL Div.=%.5f'%(denoiser.name, metrics_total[denoiser.name]['KL Divergence'][-1]))
                 
                 ### Error map
-                axs_err[idx_image].imshow(np.abs(denoised_source_to_visualize - target_to_visualize), interpolation='nearest', cmap=cmap3, norm=norm)
+                #axs_err[idx_image].imshow(np.abs(denoised_source_to_visualize - target_to_visualize), interpolation='nearest', cmap=cmap3, norm=norm)
+                axs_err[idx_image].imshow(denoised_source_to_visualize - target_to_visualize, interpolation='nearest', cmap=cmap3, vmin=-err_vmax, vmax=err_vmax)
                 axs_err[idx_image].set_title('%s; MAE=%.3f'%(denoiser.name, metrics_total[denoiser.name]['MAE'][-1]))
                 
                 ### Residuals
@@ -518,7 +544,7 @@ def parse_args(argv):
     parser.add_argument('--filters', type=bool, default=False, help='Include simple filtering methods\' results')
     parser.add_argument('--img_channel', type=int, default=1, help='Number of channels of the image data')
     parser.add_argument('--patch_size', type=int, default=256, help='Size of the patches used for inference')
-    parser.add_argument('--visualize', type=bool, default=True, help='Show the visualizations') # Basically always visualizing!
+    parser.add_argument('--visualize', type=bool, default=False, help='Show the visualizations') # Basically always visualizing!
     parser.add_argument('--structured_noise', type=bool, default=False, help='Add structured noise before inference')
     parser.add_argument('--noise_type', type=str, default='PG', help='P/G/PG/Galsim/None')
     parser.add_argument('--poisson_settings', type=int, default=20)

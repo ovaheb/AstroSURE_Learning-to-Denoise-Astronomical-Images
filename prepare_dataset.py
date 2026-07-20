@@ -14,8 +14,7 @@ import sep
 from tqdm import tqdm
 
 def prepare_dataset(dataset_path, hf_root=os.environ.get('SLURM_TMPDIR'), force=False, method='nearest', bias=0.0):
-    if 'CFHT' in dataset_path:
-        hf_root = '/home/ovaheb/scratch'
+    #hf_root = '/home/ovaheb/scratch'
     hf_path = os.path.join(hf_root, dataset_path.split('/')[-1])
     if os.path.exists(hf_path):
         if force:
@@ -41,6 +40,13 @@ def prepare_dataset(dataset_path, hf_root=os.environ.get('SLURM_TMPDIR'), force=
                         DQ_frame, _, _ = util.read_frame(hf_frame=DQ_frame, scale_mode=2)
                         frame, _, _ = util.read_frame(hf_frame=img, scale_mode=2)
                         data = np.concatenate((frame, DQ_frame), axis=0)
+                    
+                    elif 'HST' in dataset_path:
+                        img = np.float32(fits_file['SCI'].read())
+                        header = dict(fits_file[0].read_header())
+                        header['gaussian'] = (header['READNSEA'] + header['READNSEB'] + header['READNSEC'] + header['READNSED']) / 4
+                        header['poisson'] = float(sep.Background(img.astype(np.float64)).globalrms)
+                        data, _, _ = util.read_frame(hf_frame=img, scale_mode=2)
                         
                     elif 'keck' in dataset_path:
                         img = np.float32(fits_file[0].read())

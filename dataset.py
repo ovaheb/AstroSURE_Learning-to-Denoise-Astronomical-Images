@@ -49,7 +49,12 @@ class TrainingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4608, 1024)
+        if 'HST' in data_path:
+            self.image_size = (2048, 4096)
+        elif 'CFHT' not in data_path:
+            self.image_size = (4088, 4088) 
+        else:
+            self.image_size = (4608, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings
@@ -68,7 +73,7 @@ class TrainingDataset(Dataset):
         '''
         self.clean_image = self.hf[self.image_list[self.image_counter]]
         header = json.loads(self.clean_image.attrs['Header'])
-        scale_mode = 2 if 'JWST' in self.data_path else 0
+        scale_mode = 2 if ('JWST' in self.data_path or 'HST' in self.data_path) else 0
         self.clean_image, _, _ = util.read_frame(hf_frame=self.clean_image, scale_mode=scale_mode, noise_type='None', header=header)
         if self.clean_image.shape[0] != 1:
             random_index = random.choice([0, 1])
@@ -81,6 +86,11 @@ class TrainingDataset(Dataset):
             self.noisy_image2 = util.scale(self.noisy_image2, self.scaler)[0]
             self.gaussian_sample = header['VAR_RNOISE']
             self.poisson_sample = header['VAR_POISSON']
+        elif 'HST' in self.data_path:
+            self.gaussian_sample = header['gaussian']
+            self.poisson_sample = header['poisson']
+            self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
+            self.noisy_image2 = util.scale(self.clean_image, self.scaler)[0]
         elif 'CFHT' in self.data_path:
             self.gaussian_sample = header['gaussian']
             self.poisson_sample = header['poisson']
@@ -115,6 +125,7 @@ class TrainingDataset(Dataset):
         top, left = row*self.patch_size, col*self.patch_size
         top = (self.image_size[0] - self.patch_size) if (top + self.patch_size) >= self.image_size[0] else top
         left = (self.image_size[1] - self.patch_size) if (left + self.patch_size) >= self.image_size[1] else left
+
         img1 = img1[:, top:top + self.patch_size, left:left + self.patch_size]
         img2 = img2[:, top:top + self.patch_size, left:left + self.patch_size]
         source, target = torch.tensor(img2).float(), torch.tensor(img1).float()
@@ -143,7 +154,12 @@ class TestingDataset(Dataset):
         self.natural = natural
         self.exptime_division = exptime_division
         self.subtract_bkg = subtract_bkg
-        self.image_size = (4088, 4088) if 'CFHT' not in data_path else (4608, 1024)
+        if 'HST' in data_path:
+            self.image_size = (2048, 4096)
+        elif 'CFHT' not in data_path:
+            self.image_size = (4088, 4088) 
+        else:
+            self.image_size = (4608, 1024)
         self.num_of_rows, self.num_of_cols = math.ceil(self.image_size[0]/self.patch_size), math.ceil(self.image_size[1]/self.patch_size)
         self.patch_per_image = self.num_of_rows*self.num_of_cols
         self.gaussian_noise_level, self.poisson_noise_level = gaussian_settings, poisson_settings
@@ -161,7 +177,7 @@ class TestingDataset(Dataset):
         '''
         self.clean_image = self.hf[self.image_list[self.image_counter]]
         header = json.loads(self.clean_image.attrs['Header'])
-        scale_mode = 2 if 'JWST' in self.data_path else 0
+        scale_mode = 2 if ('JWST' in self.data_path or 'HST' in self.data_path) else 0
         self.clean_image, _, _ = util.read_frame(hf_frame=self.clean_image, scale_mode=scale_mode, noise_type='None', header=header)
         if self.clean_image.shape[0] != 1:
             random_index = random.choice([0, 1])
@@ -170,6 +186,11 @@ class TestingDataset(Dataset):
             self.current_exptime = header['XPOSURE']
             other_index = 1 - random_index
             self.noisy_image, _, _ = util.read_frame(hf_frame=self.hf[self.image_list[self.image_counter]][other_index:other_index+1, :, :], scale_mode=scale_mode, noise_type='None', header=header)
+        elif 'HST' in self.data_path:
+            self.gaussian_sample = header['gaussian']
+            self.poisson_sample = header['poisson']
+            self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
+            self.noisy_image2 = util.scale(self.clean_image, self.scaler)[0]
         elif 'CFHT' in self.data_path:
             self.current_exptime = header['EXPTIME']
             self.noisy_image = util.scale(self.clean_image, self.scaler)[0]
