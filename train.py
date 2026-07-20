@@ -600,7 +600,7 @@ def parse_args(argv):
     parser.add_argument('--EI_strength', type=int, default=1)
     parser.add_argument('--SURE_tau', type=float, default=0.0001)
     parser.add_argument('--SURE_tau2', type=float, default=0.001)
-    parser.add_argument('--enable_logging', type=bool, default=False)
+    parser.add_argument('--enable_logging', type=str2bool, default=True)
     parser.add_argument('--disable_early_stopping', type=bool, default=False)
     parser.add_argument('--wandb_mode', type=str, default='offline', help='online/offline')
     parser.add_argument('--disable_clipping', type=bool, default=False)
