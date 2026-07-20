@@ -559,6 +559,18 @@ def initialize_wandb(args, run_name, date):
                     "Inpainting Method": args.inpainting_method,
                     "Pretrained weights loaded from": args.load_from}, mode=args.wandb_mode, settings=wandb.Settings(start_method="thread", init_timeout=120))
     
+## Parse a flag value the way a shell user expects.
+# argparse's type=bool applies bool() to the raw string, so every non-empty
+# value is True -- '--flag False' and '--flag 0' both come out True.
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if value.lower() in ('false', 'f', 'no', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError(f'Expected a boolean value, got {value!r}')
+
 ## Parse arguments to train images with different settings and parameters
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog='training', add_help=True)
