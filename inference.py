@@ -1,6 +1,7 @@
 import sys, os
 from pathlib import Path
 import argparse
+
 import numpy as np
 import hashlib
 import logging
@@ -15,11 +16,12 @@ import fitsio
 import sep
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.cm as cm
 from matplotlib.patches import Ellipse
 from astropy.visualization import PercentileInterval, ZScaleInterval
 from astropy.table import Table
 import torch
-from denoisers import BaselineDenoiser, UNetDenoiser, DnCNNDenoiser, FilterDenoiser, BM3DDenoiser, ZSN2NDenoiser
+from denoisers import BaselineDenoiser, UNetDenoiser, DnCNNDenoiser, FilterDenoiser, BM3DDenoiser, ZSN2NDenoiser, RestormerDenoiser
 from utils import utils_image as util
 from utils import utils_logger
 
@@ -69,7 +71,9 @@ def test(argv):
         denoisers.append(denoiser) ### Define ZSN2N denoiser
     
     # ### Define denoising models
-    for idx_model, model_path in enumerate(args.model):
+    # argparse leaves --model as None when it is omitted entirely, which is a
+    # legitimate run: --bm3d/--filters/--zsn2n need no trained weights.
+    for idx_model, model_path in enumerate(args.model or []):
         # Extract model's parameters and settings from the directory name
         if model_path[0] == 'Baseline':
             scaler = 'noscale'
@@ -114,9 +118,8 @@ def test(argv):
                                          str(idx_model + 1), disable_clipping, depth=depth, model_patch_size=model_patch_size)
                 args.combine_patches = True
             elif architecture == 'Restormer':
-                raise ValueError('Architecture %s is not supported!'%architecture)
-                #denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss + ' ' +
-                #                        str(idx_model + 1), disable_clipping, upsample_mode=upsample_mode)
+                denoiser = RestormerDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
+                                             str(idx_model + 1), disable_clipping)
             else:
                 raise ValueError('Architecture %s is not supported!'%architecture)
         denoiser.to(device)
@@ -125,7 +128,7 @@ def test(argv):
         logger.info(denoiser.summarize())
         
     ### Defining metrics and data path
-    metrics_list = ['PSNR', 'SNR', 'SSIM', 'KL Divergence', 'MSE', 'MAE', 'NIQE', 'Detection Count', 'False Alarms(%)', 'Reference Count', 'Reference Detected(%)']
+    metrics_list = ['PSNR', 'SNR', 'SSIM', 'KL Divergence', 'MSE', 'MAE', 'Mean Rel. Error(%)', 'NIQE', 'Detection Count', 'False Alarms(%)', 'Reference Count', 'Reference Detected(%)']
     metrics_total['Noisy'] = {metric: [] for metric in metrics_list}
     for denoiser in denoisers:
         metrics_total[denoiser.name] = {metric: [] for metric in metrics_list}
@@ -372,19 +375,73 @@ def test(argv):
             image_obj4 = axs_res[0].imshow(np.abs(target_to_visualize - source_to_visualize), interpolation='nearest', cmap='gray_r', norm=norm)
             axs_res[0].set_title('|GT - Noisy|')
             cmap4, _ = image_obj4.get_cmap(), plt.colorbar(image_obj4, ax=axs_res[0], fraction=0.046, pad=0.04)
+
+            ### Combined comparison figure: every panel paired with its relative error map
+            # Laid out as blocks of two rows -- images on top, the matching relative
+            # error map directly beneath -- so each map sits under the image it belongs
+            # to. Reading order is Noisy, Ground Truth, then the models.
+            #
+            # Every panel is cropped to the same single patch, whatever the denoiser
+            # produced. A DnCNN forces args.combine_patches on for the whole run, so
+            # without this the panels would be full fields; cropping here keeps the
+            # figure comparing like with like at args.patch_size. Metrics are left
+            # alone -- they still describe whatever each model actually produced.
+            cmp_top, cmp_left = patch_coordinates[-1]
+            cmp_patch_index = len(patch_coordinates) - 1
+
+            def cmp_crop(data):
+                arr = data[cmp_patch_index] if isinstance(data, list) else data
+                arr = np.squeeze(np.asarray(arr))
+                if arr.shape[:2] != (args.patch_size, args.patch_size):
+                    arr = arr[cmp_top:cmp_top + args.patch_size, cmp_left:cmp_left + args.patch_size]
+                return arr
+
+            # The reference occupies a single slot with the ground truth stacked
+            # directly under the noisy frame, so the pair reads as one column and
+            # the models keep the image-over-error-map rhythm of the rest.
+            cmp_ref_slots = 1 if args.include_reference else 0
+            cmp_items = n_denoisers + cmp_ref_slots
+            cmp_cols = args.figure_cols if args.figure_cols > 0 else max(1, int(np.ceil(cmp_items / 2.0)))
+            cmp_rows = 2 * max(1, int(np.ceil(cmp_items / float(cmp_cols))))
+            fig_cmp, axs_cmp = plt.subplots(cmp_rows, cmp_cols, figsize=(util.CMP_PLOT_SIZE*cmp_cols, util.CMP_PLOT_SIZE*cmp_rows), squeeze=False)
+
+            def cmp_axes(slot):
+                block, col = divmod(slot, cmp_cols)
+                return axs_cmp[2*block, col], axs_cmp[2*block + 1, col]
+
+            # One shared scale for every relative error map, otherwise the panels
+            # cannot be compared against each other. Every map is drawn against this
+            # single Normalize instance, whose limits are only settled once all the
+            # denoised residuals are known -- mutating it afterwards restyles every
+            # panel at once. Scaling to the denoised residuals rather than to the
+            # (far larger) noisy error is what keeps the colours readable.
+            cmp_rel_scales = []
+            cmp_res_norm = mcolors.Normalize(vmin=-1.0, vmax=1.0)
+            cmp_target = cmp_crop(target_to_visualize)
+            cmp_image_obj = None
+
+            if args.include_reference:
+                ax_cmp_img, ax_cmp_res = cmp_axes(0)
+                cmp_image_obj = ax_cmp_img.imshow(visual_scaler(cmp_crop(source_to_visualize)), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                ax_cmp_img.set_title('Noisy; PSNR=%.2f'%(metrics_total['Noisy']['PSNR'][-1]), fontsize=util.CMP_FONT_SIZE)
+                ax_cmp_res.imshow(visual_scaler(cmp_target), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                ax_cmp_res.set_title('Ground Truth', fontsize=util.CMP_FONT_SIZE)
             
         
         ################# Inference #########################
         batch_size = 128 if not (CFHT_flag or HST_flag) else 32
         for idx_denoiser in range(len(denoisers)):
             denoiser = denoisers[idx_denoiser]
+            # Restormer holds far more activation memory per patch than the UNets,
+            # so the shared batch size would exhaust the GPU on the first block.
+            denoiser_batch_size = min(batch_size, 8) if isinstance(denoiser, RestormerDenoiser) else batch_size
             scaled_source, param1, param2 = util.scale(source, denoiser.scaler)
             denoised_source = np.zeros_like(scaled_source) if args.combine_patches else []
             denoised_source_count = np.zeros_like(scaled_source)
             if not isinstance(denoiser, (DnCNNDenoiser, BM3DDenoiser, ZSN2NDenoiser)):
                 start_idx = 0
                 while start_idx < len(patch_coordinates):
-                    end_idx = start_idx + batch_size if start_idx + batch_size<=len(patch_coordinates) else len(patch_coordinates)
+                    end_idx = start_idx + denoiser_batch_size if start_idx + denoiser_batch_size<=len(patch_coordinates) else len(patch_coordinates)
                     patches = [torch.from_numpy(scaled_source[top:top + args.patch_size, left:left + args.patch_size, :].astype(np.float32)) for top, left in patch_coordinates[start_idx:end_idx]]
                     scaled_source_patches = torch.permute(torch.stack(patches, dim=0), (0, 3, 1, 2))
                     with torch.no_grad():
@@ -401,7 +458,7 @@ def test(argv):
                     else:
                         for idx_estimated in range(estimated.shape[0]):
                             denoised_source.append(estimated[idx_estimated, :, :, :])
-                    start_idx += batch_size
+                    start_idx += denoiser_batch_size
 
 
                 if args.combine_patches:
@@ -435,11 +492,26 @@ def test(argv):
                         estimated = np.clip(estimated, 0.0, 65536.0)
 
                     denoised_source = estimated
-                    metrics_denoiser, results_denoiser = util.calculate_metrics(target=target, image=denoised_source, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
-                                                                     sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag, fobj=fits_file)
-                    for metric_name, metric in zip(metrics_list, metrics_denoiser):
-                        metrics_total[denoiser.name][metric_name].append(metric)
-                    denoised_source_to_visualize = denoised_source
+                    if args.combine_patches:
+                        metrics_denoiser, results_denoiser = util.calculate_metrics(target=target, image=denoised_source, header=header, catalog=catalog, aorb=aorb, border=args.overlap,
+                                                                         sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag, fobj=fits_file)
+                        for metric_name, metric in zip(metrics_list, metrics_denoiser):
+                            metrics_total[denoiser.name][metric_name].append(metric)
+                        denoised_source_to_visualize = denoised_source
+                    else:
+                        # These denoisers have to run on the whole frame, but the
+                        # figure shows a single patch, so score them patch by patch
+                        # like everything else rather than quoting a full-frame
+                        # number next to a cropped image.
+                        for top, left in patch_coordinates:
+                            target_patch = target[top:top + args.patch_size, left:left + args.patch_size, :]
+                            denoised_source_patch = denoised_source[top:top + args.patch_size, left:left + args.patch_size, :]
+                            metrics_denoiser, results_denoiser = util.calculate_metrics(target=target_patch, image=denoised_source_patch, header=header, catalog=catalog, aorb=aorb,
+                                                                             border=args.overlap, sigma_bkg=args.sigma, unsupervised=unsupervised, elliptical=args.elliptical, HST_flag=HST_flag, fobj=fits_file)
+                            for metric_name, metric in zip(metrics_list, metrics_denoiser):
+                                metrics_total[denoiser.name][metric_name].append(metric)
+                        vis_top, vis_left = patch_coordinates[-1]
+                        denoised_source_to_visualize = denoised_source[vis_top:vis_top + args.patch_size, vis_left:vis_left + args.patch_size, :]
 
             ########### Visualize denoised images ##########
             if args.visualize and visual_counter < util.MAX_NUM_TO_VISUALIZE:
@@ -482,6 +554,20 @@ def test(argv):
                 ### Residuals
                 axs_res[idx_image].imshow(np.abs(denoised_source_to_visualize - source_to_visualize), interpolation='nearest', cmap=cmap4, norm=norm)
                 axs_res[idx_image].set_title('|%s - Noisy|'%denoiser.name)
+
+                ### Combined figure: denoised image with its relative error map beneath
+                ax_cmp_img, ax_cmp_res = cmp_axes(idx_denoiser + cmp_ref_slots)
+                cmp_denoised = cmp_crop(denoised_source_to_visualize)
+                cmp_obj = ax_cmp_img.imshow(visual_scaler(cmp_denoised), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                if cmp_image_obj is None:
+                    cmp_image_obj = cmp_obj
+                ax_cmp_img.set_title('%s; PSNR=%.2f'%(denoiser.name, metrics_total[denoiser.name]['PSNR'][-1]), fontsize=util.CMP_FONT_SIZE)
+                # Taken from the cropped panel rather than from metrics_total so the
+                # number quoted describes the patch actually on display.
+                cmp_rel_map = util.relative_error_map(cmp_denoised, cmp_target)
+                cmp_rel_scales.append(util.relative_error_scale(cmp_rel_map, cmp_target))
+                ax_cmp_res.imshow(cmp_rel_map, interpolation='nearest', cmap='RdBu_r', norm=cmp_res_norm)
+                ax_cmp_res.set_title('Rel. error; flux=%+.2f%%'%(util.flux_relative_error(cmp_denoised, cmp_target)), fontsize=util.CMP_FONT_SIZE)
                 
                 if args.combine_patches:
                     if is_table_hdu:
@@ -515,7 +601,39 @@ def test(argv):
                 axs_res[idx_axs].set_xticks([])
                 axs_res[idx_axs].set_yticks([])
             plt.tight_layout()
-            
+
+            ### Finish the combined figure: blank the unused slots, strip the axes,
+            ### tighten the gaps, and attach the two shared colorbars.
+            for idx_slot in range(cmp_items, (cmp_rows // 2) * cmp_cols):
+                for ax_unused in cmp_axes(idx_slot):
+                    ax_unused.axis('off')
+            for ax_cmp in axs_cmp.ravel():
+                ax_cmp.set_xticks([])
+                ax_cmp.set_yticks([])
+            # Panels are pushed close together; the space freed on the right holds
+            # the two colorbars -- one for the images, one for the error maps -- so
+            # the reader can convert a colour into a percentage change.
+            # Settle the shared residual scale now that every denoised map has been
+            # drawn. Taking the largest of the per-model 99th percentiles keeps the
+            # worst model on-scale without letting a few outlier pixels flatten the
+            # rest to white, and every panel restyles because they share this norm.
+            rel_vmax = args.residual_vmax if args.residual_vmax > 0 else (max(cmp_rel_scales) if cmp_rel_scales else 1.0)
+            if not np.isfinite(rel_vmax) or rel_vmax <= 0:
+                rel_vmax = 1.0
+            cmp_res_norm.vmin, cmp_res_norm.vmax = -rel_vmax, rel_vmax
+
+            # hspace is the tightest value that still clears the panel titles at
+            # CMP_FONT_SIZE (measured: ~0.24in of gap against a ~0.13in title).
+            fig_cmp.subplots_adjust(left=0.01, right=0.90, top=0.96, bottom=0.02, wspace=0.02, hspace=0.05)
+            if cmp_image_obj is not None:
+                cbar_img = fig_cmp.colorbar(cmp_image_obj, cax=fig_cmp.add_axes([0.915, 0.55, 0.012, 0.38]))
+                cbar_img.set_label('Scaled pixel value', fontsize=util.CMP_FONT_SIZE)
+                cbar_img.ax.tick_params(labelsize=util.CMP_FONT_SIZE - 2)
+            cbar_res = fig_cmp.colorbar(cm.ScalarMappable(norm=cmp_res_norm, cmap='RdBu_r'), cax=fig_cmp.add_axes([0.915, 0.07, 0.012, 0.38]),
+                                        ticks=[-rel_vmax, -rel_vmax/2, 0, rel_vmax/2, rel_vmax])
+            cbar_res.set_label('Relative error (%)', fontsize=util.CMP_FONT_SIZE)
+            cbar_res.ax.tick_params(labelsize=util.CMP_FONT_SIZE - 2)
+
             img_name = img_name.split('/')[-1][:-5] if 'CFHT' not in args.data_path else img_name.split('/')[-1][:-11] + img_name[-3:]
             file_path = result_path + img_name
             if args.combine_patches:
@@ -526,6 +644,7 @@ def test(argv):
             fig_dist.savefig(file_path + '_distributions.png', dpi=300)
             fig_err.savefig(file_path + '_error_maps.png', dpi=300)
             fig_res.savefig(file_path + '_residuals.png', dpi=300)
+            fig_cmp.savefig(file_path + '_comparison.png', dpi=300, bbox_inches='tight')
             plt.close('all')
         logger.info(util.summarize_metrics(metrics_total, metrics_list, aggregate=False))
         visual_counter += 1
@@ -554,6 +673,9 @@ def parse_args(argv):
     parser.add_argument('--overlap', type=int, default=64, help='Number of overlapping pixels between adjacent windows')
     parser.add_argument('--combine_patches', type=bool, default=False, help='Combine patches before inference')
     parser.add_argument('--elliptical', type=bool, default=False, help='Whether to use sky elliptical matching instead of cartesian XY or RA DEC')
+    parser.add_argument('--residual_vmax', type=float, default=0.0, help='Symmetric limit (in percent) of the relative error colorbar; 0 picks it from the denoised residuals')
+    parser.add_argument('--include_reference', type=util.str2bool, default=True, help='Show the noisy frame and ground truth in the comparison figure')
+    parser.add_argument('--figure_cols', type=int, default=0, help='Columns in the comparison figure; 0 lays it out in two blocks automatically')
     #parser.add_argument('--disable_logging', type=bool, default=False, help='Don\'t log results into WandB')
     args = parser.parse_args(argv)
     return args

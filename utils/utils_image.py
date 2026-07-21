@@ -1,4 +1,5 @@
 import os
+import argparse
 import subprocess
 import tempfile
 import math
@@ -45,6 +46,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 plt.rcParams.update({'font.size': 12})
 PERCENTILE = 99.9
 PLOT_SIZE, MAX_NUM_TO_VISUALIZE = 7, 5
+# The combined comparison figure packs many panels together, so it uses a
+# smaller per-panel size and title than the standalone figures.
+CMP_PLOT_SIZE, CMP_FONT_SIZE = 3.2, 9
 
 '''
 # --------------------------------------------
@@ -603,6 +607,78 @@ def uMSE(image, target):
     target_a, target_b, target_c = target[::2, ::2].flatten(), target[1::2, ::2].flatten(), target[::2, 1::2].flatten()
     return np.mean((image_d - target_a) ** 2) - np.mean((target_b - target_c) ** 2) / 2
 
+# Parse a flag value the way a shell user expects.
+# argparse's type=bool applies bool() to the raw string, so every non-empty
+# value is True -- '--flag False' and '--flag 0' both come out True.
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if value.lower() in ('false', 'f', 'no', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError(f'Expected a boolean value, got {value!r}')
+
+# Signed relative difference (image - target) / |target|, expressed in percent.
+# An absolute error map cannot say whether a strong-signal region was smoothed
+# away or inflated; the sign here does, so over-smoothing reads negative and
+# excess flux reads positive.
+# The denominator is floored at the background RMS of the target because sky
+# pixels sit at ~0 and would otherwise divide to nonsense. Below that floor the
+# map reports error relative to the noise; above it (i.e. on real sources, the
+# regions the comparison is actually about) it reports the true fractional change.
+def signal_floor(target):
+    # The simulated ground truth is mostly exact zeros (~86% of pixels on these
+    # testsets), and its background RMS is ~0.09, so flooring the denominator at
+    # the background level makes every sky pixel divide by ~nothing and report
+    # hundreds of percent. Floor on the signal instead: the 90th percentile of
+    # the non-zero pixels. Real sources sit far above it and so report their true
+    # fractional change, while sky pixels -- where a percentage change of a zero
+    # is meaningless anyway -- stay near zero instead of exploding.
+    mag = np.abs(np.asarray(target).squeeze().astype(np.float64))
+    positive = mag[mag > 0]
+    if positive.size:
+        floor = float(np.percentile(positive, 90))
+        if np.isfinite(floor) and floor > 0:
+            return floor
+    peak = float(mag.max()) if mag.size else 0.0
+    return peak if np.isfinite(peak) and peak > 0 else 1.0
+
+def relative_error_map(image, target, floor=None):
+    img = np.asarray(image).squeeze().astype(np.float64)
+    tgt = np.asarray(target).squeeze().astype(np.float64)
+    if floor is None or not np.isfinite(floor) or floor <= 0:
+        floor = signal_floor(tgt)
+    return 100.0 * (img - tgt) / np.maximum(np.abs(tgt), floor)
+
+# Display limit for a relative error map, in percent.
+# Taken over signal pixels only: ~88% of the frame is empty sky whose relative
+# error is pinned near zero, so a plain percentile over the whole map collapses
+# to 0 and the colour scale degenerates. Restricting to pixels at or above the
+# signal floor makes the scale reflect the sources actually being compared.
+def relative_error_scale(error_map, target, percentile=99.0):
+    mag = np.abs(np.asarray(target).squeeze().astype(np.float64))
+    mask = mag >= signal_floor(target)
+    values = np.abs(np.asarray(error_map))[mask] if mask.any() else np.abs(np.asarray(error_map))
+    if values.size == 0:
+        return 1.0
+    scale = float(np.percentile(values, percentile))
+    return scale if np.isfinite(scale) and scale > 0 else 1.0
+
+# Flux-integrated relative error, in percent: the residual map integrated over
+# the frame and divided by the total ground-truth flux. This is the quantity to
+# quote in a table -- averaging the per-pixel ratio map instead lets the ~86% of
+# sky pixels dominate and produces meaningless numbers in the hundreds. Near zero
+# means the removed noise was zero-mean and the flux was preserved; a positive
+# value means flux was added overall, negative means it was eaten.
+def flux_relative_error(image, target):
+    img = np.asarray(image).squeeze().astype(np.float64)
+    tgt = np.asarray(target).squeeze().astype(np.float64)
+    denominator = np.abs(tgt).sum()
+    if not np.isfinite(denominator) or denominator <= 0:
+        return 0.0
+    return float(100.0 * (img - tgt).sum() / denominator)
+
 # Function to compute the different metrics
 def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sigma_bkg=3, unsupervised=False, elliptical=False, source=None, HST_flag=False, fobj=None):
     bkg_image = sep.Background(image.squeeze().astype(np.float64))
@@ -710,7 +786,8 @@ def calculate_metrics(target, image, header, catalog, aorb=None, border=128, sig
     detection_results.close()
     catalog_results.close()
     matching_results.close()
-    return [psnr, snr, ssim, kl, mse, mae, niqe_metric, detected_objs, false_alarm_rate, all_objs, 100.0*correct_detections/all_objs], results
+    mean_relative_error = flux_relative_error(image, target)
+    return [psnr, snr, ssim, kl, mse, mae, mean_relative_error, niqe_metric, detected_objs, false_alarm_rate, all_objs, 100.0*correct_detections/all_objs], results
 
 # Function to print the metrics
 def summarize_metrics(model_results, metrics_list, aggregate=False):

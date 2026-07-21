@@ -6,6 +6,7 @@ from utils import utils_image as util
 from mask import Masker
 from unet_model import UNet, UNet_Upsample, UNet_Standard
 from dncnn_model import DnCNN as DnCNN
+from restormer_model import Restormer
 import zsn2n as ZSN2N
 import bm3d
 
@@ -51,6 +52,42 @@ class UNetDenoiser():
             return '%s\n%s with %d parameters trained on %s dataset with %s setting, %s scaler, and %s loss loaded!\n'%summary
     
     
+class RestormerDenoiser():
+    # Restormer is patch-based like the UNets, so it follows the same contract:
+    # it is fed a batch of patches and returns them denoised. It is kept separate
+    # only because it takes no upsample/standard variants.
+    def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping):
+        self.img_channel = img_channel
+        self.model_path = model_path
+        self.name = 'Restormer ' + name
+        self.model = Restormer()
+        self.device = device
+        self.setting = setting
+        self.scaler = scaler
+        self.dataset_name = dataset_name
+        self.train_loss = train_loss
+        self.disable_clipping = disable_clipping
+        self.load()
+
+    def load(self):
+        # The checkpoints are written from a GPU, so map explicitly rather than
+        # relying on the saved device being available.
+        self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+        self.model.eval()
+
+    def to(self, device):
+        self.model = self.model.to(device)
+
+    def denoise(self, image):
+        denoised_image = self.model(image).detach().cpu().numpy()
+        denoised_image = np.expand_dims(np.squeeze(denoised_image, axis=1), axis=-1)
+        return denoised_image
+
+    def summarize(self):
+        summary = (self.model_path, self.name, sum(p.numel() for p in self.model.parameters()), self.dataset_name, self.setting, self.scaler, self.train_loss)
+        return '%s\n%s with %d parameters trained on %s dataset with %s setting, %s scaler, and %s loss loaded!\n'%summary
+
+
 class DnCNNDenoiser():
     def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, depth, model_patch_size):
         self.img_channel = img_channel
@@ -99,6 +136,11 @@ class BM3DDenoiser():
             return 'BM3D denoiser loaded!\n'
         
     def denoise(self, image):
+        # Handed a torch tensor shaped (1, C, H, W) by inference.py; bm3d works on
+        # a 2-D frame and the caller expects (H, W, 1) back.
+        if torch.is_tensor(image):
+            image = image.detach().cpu().numpy()
+        image = np.squeeze(np.asarray(image, dtype=np.float32))
         if self.VST:
             sscaler = StandardScaler()
             sscaler.fit(image.reshape(-1, 1))
@@ -159,12 +201,27 @@ class FilterDenoiser():
         self.gaussian_sigma = gaussian_sigma
         
     def denoise(self, image):
-        if self.name=='Median Filter':
-            return uniform_filter(image.astype(np.float32), size=self.kernel_size)
-        elif self.name=='Mean Filter':
-            return median_filter(image.astype(np.float32), size=self.kernel_size)
+        # inference.py hands this a torch tensor of patches shaped (B, C, H, W);
+        # scipy needs numpy, and the rest of the pipeline expects (B, H, W, C)
+        # back, matching what the network denoisers return.
+        if torch.is_tensor(image):
+            image = image.detach().cpu().numpy()
+        image = np.asarray(image, dtype=np.float32)
+        if image.ndim == 4:
+            image = np.moveaxis(image, 1, -1)
+        # Filter over the spatial axes only -- a scalar size would also smear
+        # across the batch and channel axes, mixing neighbouring patches.
+        spatial = tuple(1 if axis in (0, image.ndim - 1) else self.kernel_size for axis in range(image.ndim)) if image.ndim == 4 else self.kernel_size
+        sigma = tuple(0 if axis in (0, image.ndim - 1) else self.gaussian_sigma for axis in range(image.ndim)) if image.ndim == 4 else self.gaussian_sigma
+        if self.name=='Mean Filter':
+            return uniform_filter(image, size=spatial)
+        elif self.name=='Median Filter':
+            return median_filter(image, size=spatial)
         elif self.name=='Gaussian Filter':
-            return gaussian_filter(image.astype(np.float32), sigma=self.gaussian_sigma)
+            return gaussian_filter(image, sigma=sigma)
+
+    def summarize(self):
+        return '%s with kernel size %d loaded!\n'%(self.name, self.kernel_size)
 
 class BaselineDenoiser():
     def __init__(self):
