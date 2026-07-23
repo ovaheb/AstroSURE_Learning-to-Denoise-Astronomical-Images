@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import hashlib
 import logging
+from collections import Counter
 import random
 import time
 import datetime
@@ -102,28 +103,41 @@ def test(argv):
             else:
                 disable_clipping = False
 
+            # Names carry no per-model index here; a disambiguating index is added
+            # afterwards only when two selected weights share a name (e.g. several
+            # epochs of the same training). With one best weight per model, which is
+            # the usual case, every name is already unique and stays index-free.
             if architecture == 'UNet':
-                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
-                                        str(idx_model + 1), disable_clipping, upsample_mode=None)
+                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss,
+                                        disable_clipping, upsample_mode=None)
             elif 'UNet-Upsample' in architecture:
                 upsample_mode = 'bilinear' if architecture=='UNet-Upsample' else architecture[14:]
-                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss + ' ' +
-                                        str(idx_model + 1), disable_clipping, upsample_mode=upsample_mode)
+                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Upsample ' + setting + ' ' + train_loss,
+                                        disable_clipping, upsample_mode=upsample_mode)
             elif architecture == 'UNet-Standard':
-                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Standard ' + setting + ' ' + train_loss + ' ' +
-                                        str(idx_model + 1), disable_clipping, standard=True)
+                denoiser = UNetDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, 'Vanilla ' + setting + ' ' + train_loss,
+                                        disable_clipping, standard=True)
             elif 'DnCNN' in architecture:
                 depth, model_patch_size = int(architecture.split('-')[1]), int(architecture.split('-')[2])
-                denoiser = DnCNNDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
-                                         str(idx_model + 1), disable_clipping, depth=depth, model_patch_size=model_patch_size)
+                denoiser = DnCNNDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss,
+                                         disable_clipping, depth=depth, model_patch_size=model_patch_size)
                 args.combine_patches = True
             elif architecture == 'Restormer':
-                denoiser = RestormerDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss + ' ' +
-                                             str(idx_model + 1), disable_clipping)
+                denoiser = RestormerDenoiser(complete_model_path, args.img_channel, device, setting, scaler, dataset_name, train_loss, setting + ' ' + train_loss,
+                                             disable_clipping)
             else:
                 raise ValueError('Architecture %s is not supported!'%architecture)
         denoiser.to(device)
         denoisers.append(denoiser)
+    # Append a 1-based index only to names that would otherwise collide, so that
+    # several weights from the same training (e.g. different epochs) stay
+    # distinguishable while singleton models keep a clean, index-free title.
+    name_counts = Counter(denoiser.name for denoiser in denoisers)
+    seen_names = {}
+    for denoiser in denoisers:
+        if name_counts[denoiser.name] > 1:
+            seen_names[denoiser.name] = seen_names.get(denoiser.name, 0) + 1
+            denoiser.name = '%s %d' % (denoiser.name, seen_names[denoiser.name])
     for denoiser in denoisers:
         logger.info(denoiser.summarize())
         
@@ -171,10 +185,16 @@ def test(argv):
         catalog = Table.read('/home/ovaheb/projects/def-sdraper/ovaheb/udf-i.fits')
     
     ################################## Inference ##################################
-    rng = np.random.default_rng(int(hashlib.sha256(args.data_path.encode()).hexdigest(), 16) % 1000)  # Generate a unique number for each dataset same in different runs
     height, width, visual_counter = 0, 0, 0
     n_denoisers = len(denoisers)
     for img_name in tqdm(img_list, leave=False, colour='green'):
+        # Seed the noise RNG from the image's own identity rather than from a
+        # single stream shared across the loop. A shared generator makes each
+        # image's noise depend on its position in the sequence, so anything that
+        # shifts the order (rglob is unordered) or the per-image draw count
+        # changes the noise between runs. Keying on the filename gives each image
+        # its own noise -- random across images, but identical across runs.
+        rng = np.random.default_rng(int(hashlib.sha256((args.data_path + '::' + os.path.basename(img_name)).encode()).hexdigest(), 16) % (2**32))
         ### Reading FITS files
         fits_file = fits.open(img_name) if 'CFHT' not in args.data_path else fits.open(img_name[:-3])
         if JWST_flag:
@@ -418,13 +438,27 @@ def test(argv):
             cmp_rel_scales = []
             cmp_res_norm = mcolors.Normalize(vmin=-1.0, vmax=1.0)
             cmp_target = cmp_crop(target_to_visualize)
+
+            # One shared greyscale stretch for every image panel. visual_scaler is a
+            # PercentileInterval, which recomputes its limits from whatever array it
+            # is handed, so calling it per panel would stretch each image to its own
+            # maximum -- a model that uniformly dims the field would then look
+            # identical to one that does not. The limits are taken once from the
+            # ground truth and every panel is drawn against this single Normalize,
+            # so the colorbar reads in real pixel values and greys are comparable.
+            cmp_lo, cmp_hi = visual_scaler.get_limits(cmp_target)
+            if not np.isfinite(cmp_lo) or not np.isfinite(cmp_hi) or cmp_hi <= cmp_lo:
+                cmp_lo, cmp_hi = float(np.min(cmp_target)), float(np.max(cmp_target))
+                if cmp_hi <= cmp_lo:
+                    cmp_hi = cmp_lo + 1.0
+            cmp_img_norm = mcolors.Normalize(vmin=cmp_lo, vmax=cmp_hi)
             cmp_image_obj = None
 
             if args.include_reference:
                 ax_cmp_img, ax_cmp_res = cmp_axes(0)
-                cmp_image_obj = ax_cmp_img.imshow(visual_scaler(cmp_crop(source_to_visualize)), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                cmp_image_obj = ax_cmp_img.imshow(cmp_crop(source_to_visualize), interpolation='nearest', cmap='gray', norm=cmp_img_norm)
                 ax_cmp_img.set_title('Noisy; PSNR=%.2f'%(metrics_total['Noisy']['PSNR'][-1]), fontsize=util.CMP_FONT_SIZE)
-                ax_cmp_res.imshow(visual_scaler(cmp_target), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                ax_cmp_res.imshow(cmp_target, interpolation='nearest', cmap='gray', norm=cmp_img_norm)
                 ax_cmp_res.set_title('Ground Truth', fontsize=util.CMP_FONT_SIZE)
             
         
@@ -558,7 +592,7 @@ def test(argv):
                 ### Combined figure: denoised image with its relative error map beneath
                 ax_cmp_img, ax_cmp_res = cmp_axes(idx_denoiser + cmp_ref_slots)
                 cmp_denoised = cmp_crop(denoised_source_to_visualize)
-                cmp_obj = ax_cmp_img.imshow(visual_scaler(cmp_denoised), interpolation='nearest', cmap='gray', vmin=0, vmax=1)
+                cmp_obj = ax_cmp_img.imshow(cmp_denoised, interpolation='nearest', cmap='gray', norm=cmp_img_norm)
                 if cmp_image_obj is None:
                     cmp_image_obj = cmp_obj
                 ax_cmp_img.set_title('%s; PSNR=%.2f'%(denoiser.name, metrics_total[denoiser.name]['PSNR'][-1]), fontsize=util.CMP_FONT_SIZE)
@@ -627,7 +661,7 @@ def test(argv):
             fig_cmp.subplots_adjust(left=0.01, right=0.90, top=0.96, bottom=0.02, wspace=0.02, hspace=0.05)
             if cmp_image_obj is not None:
                 cbar_img = fig_cmp.colorbar(cmp_image_obj, cax=fig_cmp.add_axes([0.915, 0.55, 0.012, 0.38]))
-                cbar_img.set_label('Scaled pixel value', fontsize=util.CMP_FONT_SIZE)
+                cbar_img.set_label('Pixel value (%.1f%% stretch of GT)'%util.PERCENTILE, fontsize=util.CMP_FONT_SIZE)
                 cbar_img.ax.tick_params(labelsize=util.CMP_FONT_SIZE - 2)
             cbar_res = fig_cmp.colorbar(cm.ScalarMappable(norm=cmp_res_norm, cmap='RdBu_r'), cax=fig_cmp.add_axes([0.915, 0.07, 0.012, 0.38]),
                                         ticks=[-rel_vmax, -rel_vmax/2, 0, rel_vmax/2, rel_vmax])

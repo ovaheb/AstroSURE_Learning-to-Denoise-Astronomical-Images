@@ -92,7 +92,8 @@ class DnCNNDenoiser():
     def __init__(self, model_path, img_channel, device, setting, scaler, dataset_name, train_loss, name, disable_clipping, depth, model_patch_size):
         self.img_channel = img_channel
         self.model_path = model_path
-        self.name = 'DnCNN ' + name
+        # Label with the training depth and patch size, e.g. 'DnCNN-17-64'.
+        self.name = 'DnCNN-%d-%d ' % (depth, model_patch_size) + name
         self.device = device
         self.setting = setting
         self.scaler = scaler
